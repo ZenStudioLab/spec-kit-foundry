@@ -1,0 +1,15 @@
+version: 1
+default_provider: codex
+max_rounds_per_session: 10
+max_context_rounds: 3
+max_artifact_size_kb: 50
+providers:
+  codex:
+    enabled: true
+    mode: orchestrated
+  copilot:
+    enabled: false
+    mode: orchestrated
+  gemini:
+    enabled: false
+    mode: orchestrated

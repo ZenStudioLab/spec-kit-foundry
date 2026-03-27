@@ -1,0 +1,13 @@
+id: peer
+version: 1.0.0
+description: "Adversarial peer review and orchestrated batch execution for Spec Kit artifacts"
+
+provides:
+  commands:
+    - review
+    - execute
+  memory:
+    - memory/peer-guide.md
+  templates: []
+
+hooks: []
