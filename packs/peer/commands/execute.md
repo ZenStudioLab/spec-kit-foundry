@@ -19,10 +19,17 @@ Implement pending tasks from `tasks.md` in batches using the configured executor
 
 | Role | Actor | Responsibility |
 |------|-------|----------------|
-| **Orchestrator** | Claude | Resolve feature/config/state; dispatch task batches; verify checkbox transitions; run code-review/fix loop; append code-review rounds; persist state; report completion. **Never writes implementation code.** |
+| **Orchestrator** | Claude | Resolve feature/config/state; dispatch task batches; verify checkbox transitions; run code-review/fix loop; append code-review rounds; persist state; report completion. **Never writes implementation code or code review verdicts.** |
 | **Executor** | Codex (or configured provider) | Implement the assigned batch; update task checkboxes in `tasks.md`; respond to fix instructions; return review verdicts. |
 
-This boundary is invariant. If the executor is unavailable, the command halts.
+> **CRITICAL CONSTRAINT**: You are the ORCHESTRATOR, not the IMPLEMENTER or REVIEWER.
+>
+> Do not emit any implementation code, fix code, or code-review verdicts in this response before the Adapter Invocation Gate passes.
+> - You MUST invoke `ask_codex.sh` via terminal for all implementation batches AND all code-review rounds.
+> - You MUST NOT write implementation code, fix code, or code review verdicts yourself.
+> - If the provider is unavailable, ABORT and report the error. Never fall back to inline execution or review.
+>
+> This boundary is invariant. If the executor is unavailable, the command halts.
 
 ---
 
@@ -209,17 +216,45 @@ Instructions:
 ```
 
 **c) Invoke executor**:
+
+**Step 2.3.1** — Write execution prompt to temp file (via terminal):
 ```bash
-ask_codex.sh "<prompt>" --file <tasks_path> [--session <session_id>] --reasoning high
+EXEC_PROMPT_FILE="$(mktemp /tmp/peer-exec-prompt.XXXXXX)"
+trap 'rm -f "$EXEC_PROMPT_FILE"' EXIT INT TERM
+cat > "$EXEC_PROMPT_FILE" << 'EXEC_PROMPT_EOF'
+<assembled prompt from Step 2.3b>
+EXEC_PROMPT_EOF
 ```
 
-Parse strict stdout contract:
+**Step 2.3.2** — Hard gate reminder (inline, at point-of-invocation):
+
+> ⚠️ ORCHESTRATOR GATE: Do not proceed past this point unless you are about to execute the terminal command below. Do not generate implementation code or task completions here.
+
+**Step 2.3.3** — Invoke adapter via terminal:
+```bash
+"$codex_script_path" \
+  "$(cat "$EXEC_PROMPT_FILE")" \
+  --file "$tasks_path" \
+  --reasoning high
+  # Include: --session "<session_id>"  only when valid session_id exists (Step 2.2)
+```
+
+> **Single-session requirement (Steps 2.3.1–2.3.4)**: Steps 2.3.1 through 2.3.4 share shell state (`EXEC_PROMPT_FILE` variable, `trap` handler). They MUST be issued as one chained shell invocation block, NOT as separate terminal calls.
+
+**Step 2.3.4** — Parse strict stdout contract:
 - Line 1: `session_id=<value>`
 - Line 2: `output_path=<path>`
-- Any deviation → `PARSE_FAILURE` (exit `8`)
+- Any deviation (extra lines, missing lines, wrong format, blank line, trailing whitespace) → `PARSE_FAILURE` (exit `8`)
+- Parsing rules: exact prefix match `session_id=` / `output_path=`, no surrounding whitespace. Record parsed `session_id` and `output_path`.
 
-Validate `output_path` is non-empty and file exists:
-- If missing or empty → `[peer/execute] ERROR: PROVIDER_EMPTY_RESPONSE` → exit `3`
+**Adapter Invocation Gate — Batch Execution** (before verifying checkboxes):
+1. `ask_codex.sh` was executed via terminal for this batch.
+2. Actual `session_id=` and `output_path=` were captured from terminal stdout.
+3. File at `output_path` exists and is non-empty.
+4. The `output_path` file's mtime is ≥ invocation start; neither `session_id` nor `output_path` has been carried over from a previous batch.
+
+If any check fails: ABORT. Emit only the error line below and stop — do not emit any additional content:
+`[peer/execute] ERROR: PROVIDER_UNAVAILABLE: execution adapter was not invoked via terminal` → exit `1`.
 
 **d) Verify task checkbox transitions**:
 - Re-read `tasks.md` after executor completes
@@ -258,7 +293,45 @@ Verdict: NEEDS_FIX
 Verdict: APPROVED
 ```
 
-**Invoke adapter** (same session unless reset required).
+**Invoke adapter**:
+
+**Step 2.4.1** — Write code-review prompt to temp file (via terminal):
+```bash
+REVIEW_PROMPT_FILE="$(mktemp /tmp/peer-crreview-prompt.XXXXXX)"
+trap 'rm -f "$REVIEW_PROMPT_FILE"' EXIT INT TERM
+cat > "$REVIEW_PROMPT_FILE" << 'REVIEW_PROMPT_EOF'
+<code review prompt from above>
+REVIEW_PROMPT_EOF
+```
+
+**Step 2.4.2** — Hard gate reminder (inline, at point-of-invocation):
+
+> ⚠️ ORCHESTRATOR GATE: Do not proceed past this point unless you are about to execute the terminal command below. Do not generate code review verdicts here.
+
+**Step 2.4.3** — Invoke adapter via terminal:
+```bash
+"$codex_script_path" \
+  "$(cat "$REVIEW_PROMPT_FILE")" \
+  --file "$tasks_path" \
+  --reasoning high
+  # Include: --session "<session_id>"  only when valid session_id exists (Step 2.2)
+```
+
+> **Single-session requirement (Steps 2.4.1–2.4.4)**: Steps 2.4.1 through 2.4.4 share shell state. They MUST be issued as one chained shell invocation block, NOT as separate terminal calls.
+
+**Step 2.4.4** — Parse strict stdout contract (same rules as Step 2.3.4):
+- Line 1: `session_id=<value>`
+- Line 2: `output_path=<path>`
+- Any deviation → `PARSE_FAILURE` (exit `8`). Record parsed `session_id` and `output_path`.
+
+**Adapter Invocation Gate — Code Review** (before parsing verdict or acquiring lock):
+1. `ask_codex.sh` was executed via terminal for this code-review round.
+2. Actual `session_id=` and `output_path=` were captured from terminal stdout.
+3. File at `output_path` exists and is non-empty.
+4. The `output_path` file's mtime is ≥ invocation start; neither `session_id` nor `output_path` has been carried over from a previous round.
+
+If any check fails: ABORT. Emit only the error line below and stop — do not append a round or advance the loop:
+`[peer/execute] ERROR: PROVIDER_UNAVAILABLE: code-review adapter was not invoked via terminal` → exit `1`.
 
 **Parse verdict from last 5 lines** of `output_path` content:
 ```bash

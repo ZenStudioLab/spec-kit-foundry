@@ -1,2 +1,4 @@
 specs/*/reviews/provider-state.json
 specs/*/reviews/*.bak.*
+
+*.zip

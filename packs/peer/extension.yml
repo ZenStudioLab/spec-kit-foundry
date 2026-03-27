@@ -1,13 +1,20 @@
-id: peer
-version: 1.0.0
-description: "Adversarial peer review and orchestrated batch execution for Spec Kit artifacts"
+schema_version: "1.0"
+
+extension:
+  id: peer
+  name: "Peer Review & Execute"
+  version: 1.0.0
+  description: "Adversarial peer review and orchestrated batch execution for Spec Kit artifacts"
+
+requires:
+  speckit_version: ">=0.1.0"
 
 provides:
   commands:
-    - review
-    - execute
+    - name: speckit.peer.review
+      file: commands/review.md
+    - name: speckit.peer.execute
+      file: commands/execute.md
   memory:
     - memory/peer-guide.md
-  templates: []
 
-hooks: []
