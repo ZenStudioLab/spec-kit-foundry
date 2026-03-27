@@ -31,6 +31,24 @@ Invoke an adversarial peer review against a single Spec Kit artifact (`spec`, `r
 
 ---
 
+## Role Model
+
+| Role | Actor | Responsibility |
+|------|-------|----------------|
+| **Orchestrator** | Claude | Resolve feature/config/state; assemble prompts; invoke provider adapter via terminal; parse output; append review rounds; persist state; report consensus. **Never generates review content.** |
+| **Provider** | Codex (or configured provider) | Generate all review content and status markers. |
+
+> **CRITICAL CONSTRAINT**: You are the ORCHESTRATOR, not the REVIEWER.
+>
+> Do not emit any review feedback, critique, or consensus status in this response before the Adapter Invocation Gate passes.
+> - You MUST invoke `ask_codex.sh` via terminal to obtain review content.
+> - You MUST NOT write review feedback, critique, or consensus status yourself.
+> - If the provider is unavailable, ABORT and report the error. Never fall back to generating review content inline.
+>
+> This boundary is invariant. If the provider is unavailable, the command halts.
+
+---
+
 ## Part 1: Preflight, Config, and Feature Resolution
 
 ### Step 1.1 — Artifact Enum Gate
@@ -250,21 +268,60 @@ Compose the prompt following this structure:
 
 ### Step 2.7 — Invoke Provider Adapter
 
-Invoke the codex adapter:
+**Step 2.7a — Write prompt to temp file** (via terminal):
 ```bash
-ask_codex.sh "<prompt>" --file <artifact-path> [--session <session_id>] --reasoning high
+PROMPT_FILE="$(mktemp /tmp/peer-review-prompt.XXXXXX)"
+trap 'rm -f "$PROMPT_FILE"' EXIT INT TERM
+cat > "$PROMPT_FILE" << 'PEER_PROMPT_EOF'
+<assembled prompt from Step 2.6>
+PEER_PROMPT_EOF
 ```
+Using `mktemp` (not `$$`) ensures an unguessable filename with restricted permissions. The `trap` ensures cleanup on all exit paths, including failures and interrupts.
 
-- Include `--session <session_id>` only when a valid session_id is available (Step 2.2)
-- All output on stderr from the skill is passed through
-- Capture stdout strictly
+> **ARG_MAX constraint**: Passing `"$(cat "$PROMPT_FILE")"` as the first argument to `ask_codex.sh` is limited by the OS `ARG_MAX` (typically 2MB). For the current artifact sizes (≤ 50KB per `max_artifact_size_kb`), this is safe. If a future adapter revision adds a `--prompt-file` flag, prefer that. Until then, this pattern is correct within v1 constraints.
 
-**Parse strict stdout contract**:
-- Stdout must contain **exactly**:
-  - Line 1: `session_id=<value>`
-  - Line 2: `output_path=<path>`
-- Any deviation (extra lines, missing lines, wrong format) is a `PARSE_FAILURE` (exit `8`)
-- Record parsed `session_id` and `output_path`
+**Step 2.7b — Hard gate reminder** (inline, at point-of-invocation):
+
+> ⚠️ ORCHESTRATOR GATE: Do not proceed past this point unless you are about to execute the terminal command below. Do not generate review content here.
+
+**Step 2.7c — Invoke adapter via terminal**:
+```bash
+"$codex_script_path" \
+  "$(cat "$PROMPT_FILE")" \
+  --file "specs/<featureId>/<artifact>.md" \
+  --reasoning high
+  # Include: --session "<session_id>"  only when valid session_id exists (Step 2.2)
+```
+Use `$codex_script_path` resolved in Step 1.5 (not hardcoded default path). Cleanup is handled by the `trap` installed in Step 2.7a.
+
+> **Single-session requirement (Steps 2.7a–d)**: Steps 2.7a through 2.7d share shell state (`PROMPT_FILE` variable, `trap` handler). They MUST be issued as one chained shell invocation block (e.g., joined with `&&` or as a single script), NOT as separate terminal calls. If split, `PROMPT_FILE` is undefined in later steps and `trap` may delete the file prematurely.
+
+**Step 2.7d — Parse strict stdout contract**: Capture stdout and parse exactly two lines:
+- Line 1: `session_id=<value>`
+- Line 2: `output_path=<path>`
+
+Any deviation (extra lines, missing lines, wrong format, blank line, trailing whitespace) is a `PARSE_FAILURE` (exit `8`). Parsing rules: exact prefix match `session_id=` / `output_path=`, no surrounding whitespace, value is the remainder of the line. Record parsed `session_id` and `output_path`.
+
+### Step 2.8 — Adapter Invocation Gate
+
+This gate applies to ALL artifact types, including `tasks`.
+
+Before proceeding to Part 3, all of the following must be true:
+
+1. `ask_codex.sh` was executed via a terminal invocation — the shell command ran; you did not reason around it or simulate its output.
+2. You have the actual `session_id=` and `output_path=` values from terminal stdout — not reconstructed, assumed, or carried over from a previous round. These values are your falsifiable attestation.
+3. The file at the resolved `output_path` exists and is non-empty.
+4. The `output_path` file's mtime is ≥ the timestamp when Step 2.7c began, and neither `session_id` nor `output_path` has been carried over from a previous round.
+
+**If any check fails**:
+- **ABORT the current response immediately.** Do NOT write or append any review content. Do NOT proceed to any step in Part 3.
+- Emit only this error line and stop — do not emit any additional content:
+  `[peer/review] ERROR: PROVIDER_UNAVAILABLE: adapter was not invoked via terminal or output attestation is missing/stale`
+  → exit `1`
+
+> _[Operator context — not runtime output]:_ Set `PEER_DEBUG=1` to surface full adapter stderr. Resolve the underlying cause (e.g., missing codex skill, wrong `CODEX_SKILL_PATH`) before retrying.
+
+> **On ABORT vs DISCARD**: Tokens already emitted in a streaming response cannot be retracted. The correct instruction is: do not emit substantive review content before the gate check. Step 2.8 fires only after Step 2.7 — so by the gate point, the agent has not yet written the review body. Gate failure at Step 2.8 is terminal: Part 3 is not entered.
 
 ---
 
