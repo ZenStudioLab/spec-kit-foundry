@@ -30,7 +30,7 @@ skills install https://skills.sh/oil-oil/codex/codex
 
 Verify installation:
 ```bash
-ls ~/.claude/skills/codex/scripts/ask_codex.sh
+test -x ~/.claude/skills/codex/scripts/ask_codex.sh && echo "codex skill OK"
 ```
 
 The file must exist and be executable for peer commands to function.
@@ -43,7 +43,7 @@ From your project root (or from the Spec Kit extension registry):
 
 ```bash
 # Install from local path (development / monorepo use)
-specify extension add peer --dev /path/to/spec-kit-foundry/packs/peer
+specify extension add peer --dev /absolute/path/to/<repo>/packs/peer
 
 # Install from registry (once published)
 specify extension add speckit-peer
@@ -62,18 +62,24 @@ specify extension list
 Create `.specify/peer.yml` in your project root:
 
 ```yaml
+version: 1
 default_provider: codex
+max_rounds_per_session: 10
+max_context_rounds: 3
 providers:
   codex:
     enabled: true
     mode: orchestrated
   copilot:
     enabled: false
+    mode: orchestrated
   gemini:
     enabled: false
+    mode: orchestrated
 ```
 
 Only `codex` is implemented in v1. Leave `copilot` and `gemini` as `enabled: false` — they are stubs reserved for future releases.
+`max_rounds_per_session` bounds session drift; `max_context_rounds` controls how many prior rounds are sent as context each invocation.
 
 ---
 
@@ -91,17 +97,20 @@ Or review the plan after `/speckit.plan` has generated it:
 /speckit.peer.review plan
 ```
 
+Run peer commands from the target feature context so feature resolution is unambiguous.
+
 The command will:
 1. Load the artifact from `specs/<feature>/<artifact>.md`
 2. Invoke Codex to produce a detailed review with severity-labelled issues
 3. Append the round to `specs/<feature>/reviews/<artifact>-review.md`
-4. Apply revisions to the artifact and re-review until `APPROVED`
+4. Return a `Consensus Status` (`NEEDS_REVISION`, `MOSTLY_GOOD`, `APPROVED`, or `BLOCKED`)
+5. If status is not acceptable, revise the artifact and re-run the same review command
 
 ---
 
 ## Step 4: Run Batch Execution
 
-Once the plan is reviewed and `APPROVED` (or `MOSTLY_GOOD`), run the executor:
+Once the plan review is `APPROVED` (or `MOSTLY_GOOD`), run the executor. For stronger cross-artifact safety, run `/speckit.peer.review tasks` first and resolve major findings before execution.
 
 ```bash
 /speckit.peer.execute
@@ -109,10 +118,11 @@ Once the plan is reviewed and `APPROVED` (or `MOSTLY_GOOD`), run the executor:
 
 The command will:
 1. Verify the plan review has an approved round (readiness gate)
-2. Read `plan.md` + `tasks.md` for context
-3. Dispatch unchecked tasks to Codex in coherent batches
-4. Have Codex mark `- [ ]` checkboxes as `- [x]` after each batch
-5. Produce code review rounds and loop until `APPROVED`
+2. Optionally use the tasks review as a cross-artifact readiness checkpoint before execution
+3. Read `plan.md` + `tasks.md` for context
+4. Dispatch unchecked tasks to Codex in coherent batches
+5. Have Codex mark `- [ ]` checkboxes as `- [x]` after each batch
+6. Produce code review rounds and loop until `APPROVED`
 
 All execution is performed by Codex. Claude orchestrates and code-reviews but **never writes implementation files**.
 
@@ -125,7 +135,8 @@ All execution is performed by Codex. Claude orchestrates and code-reviews but **
 2. /speckit.peer.review spec → Peer-review the spec (optional but recommended)
 3. /speckit.plan             → Generate plan.md + tasks.md
 4. /speckit.peer.review plan → Peer-review the plan (required before execute)
-5. /speckit.peer.execute     → Implement tasks with Codex
+5. /speckit.peer.review tasks → Cross-artifact readiness gate before execute
+6. /speckit.peer.execute     → Implement tasks with Codex
 ```
 
 ---
@@ -136,14 +147,19 @@ After a full peer review + execute cycle for a feature:
 
 ```
 specs/<featureId>/
-├── spec.md                       (reviewed, revised)
-├── plan.md                       (reviewed, revised)
+├── spec.md                       (reviewed, optionally revised)
+├── research.md                   (reviewed, optionally revised)
+├── plan.md                       (reviewed, optionally revised)
 ├── tasks.md                      (checkboxes completed by executor)
 └── reviews/
-    ├── spec-review.md            (append-only, N rounds)
+    ├── spec-review.md            (if spec was reviewed)
+    ├── research-review.md        (if research was reviewed)
+    ├── tasks-review.md           (if tasks readiness was reviewed)
     ├── plan-review.md            (plan review rounds + code review rounds)
     └── provider-state.json       (session continuity per provider/workflow)
 ```
+
+`provider-state.json` and any `*.bak.*` recovery files are runtime state and are typically ignored by VCS.
 
 ---
 
@@ -158,8 +174,17 @@ specs/<featureId>/
 **"Plan has no approved review"**
 → Run `/speckit.peer.review plan` before `/speckit.peer.execute`. The readiness gate requires at least one `MOSTLY_GOOD` or `APPROVED` plan review round.
 
+**"Tasks readiness not reviewed / not good enough"**
+→ Run `/speckit.peer.review tasks` and address any `NEEDS_REVISION` or `BLOCKED` outcomes before execution.
+
+**"Provider '<name>' is disabled in .specify/peer.yml"**
+→ Set `enabled: true` for that provider, or use `default_provider: codex`.
+
 **"Provider 'copilot' has no adapter"**
-→ Only `codex` is implemented in v1. Use `default_provider: codex` in peer.yml.
+→ The provider is configured/enabled but unimplemented. In v1, use `codex`.
+
+**"Provider output missing Consensus Status / Verdict"**
+→ This is a parse-sensitive output failure. Keep the existing review history append-only, then re-run the same command (and same provider/session if applicable).
 
 ---
 
@@ -172,4 +197,4 @@ Use the `--provider` flag to override `default_provider` for a single invocation
 /speckit.peer.execute --provider codex
 ```
 
-In v1, any provider other than `codex` will fail the adapter check. This flag is forward-compatible — once a new provider adapter lands, it becomes usable without config changes.
+In v1, provider selection is checked in order: configured → enabled → adapter implemented. `codex` is the only implemented adapter today. This flag is forward-compatible — once a new provider adapter lands and is enabled, it becomes usable without changing command shape.
