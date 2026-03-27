@@ -1,0 +1,73 @@
+# Schema: peer-providers.schema.yml
+# Validates the structure of .specify/peer.yml
+# Version: 1
+
+$schema: "peer-providers:1"
+
+# Top-level required fields
+required:
+  - version
+  - default_provider
+  - providers
+
+properties:
+  version:
+    type: integer
+    const: 1
+    description: "Schema version. Must be exactly 1."
+
+  default_provider:
+    type: string
+    enum: [codex, copilot, gemini]
+    description: "Provider used when --provider flag is not specified."
+
+  max_rounds_per_session:
+    type: integer
+    minimum: 1
+    default: 10
+    description: "Maximum provider rounds per session before context reset."
+
+  max_context_rounds:
+    type: integer
+    minimum: 1
+    default: 3
+    description: "Number of prior review rounds included as context on each invocation."
+
+  max_artifact_size_kb:
+    type: integer
+    minimum: 1
+    maximum: 10240
+    default: 50
+    description: "Maximum single-artifact file size in KB. Must be 1–10240."
+
+  providers:
+    type: object
+    description: "Map of provider id to provider configuration."
+    additionalProperties: false
+    required: [codex]
+    properties:
+      codex:
+        $ref: "#/$defs/provider_entry"
+      copilot:
+        $ref: "#/$defs/provider_entry"
+      gemini:
+        $ref: "#/$defs/provider_entry"
+
+$defs:
+  provider_entry:
+    type: object
+    required: [enabled, mode]
+    additionalProperties: false
+    properties:
+      enabled:
+        type: boolean
+        description: "Whether this provider is available for selection."
+      mode:
+        type: string
+        enum: [orchestrated]
+        description: "Execution mode. Only 'orchestrated' is supported in v1."
+
+# Validation rules enforced at command preflight (not in this schema):
+#   - CODEX_TIMEOUT_SECONDS: integer 10–600, default 60 (environment variable)
+#   - Only providers listed above ('codex', 'copilot', 'gemini') are valid.
+#     Unknown provider IDs are rejected with exit 5 VALIDATION_ERROR.
