@@ -43,15 +43,15 @@ Before handing off to `/speckit.peer.execute`, a developer wants to verify the e
 
 ### User Story 3 - Orchestrated Batch Execution (Priority: P3)
 
-A developer with an approved plan and tasks wants the peer agent to implement the feature in batches. They invoke `/speckit.peer.execute`. The extension reads the active feature's approved `plan.md` and `tasks.md`, selects the configured provider, and implements tasks in batches. After each batch it performs a review/fix loop. As tasks are completed, their checkboxes in `tasks.md` are marked. Execution progress and code review rounds are recorded in `reviews/code-review.md`.
+A developer with an approved plan and tasks wants the peer agent to implement the feature in batches. They invoke `/speckit.peer.execute`. The extension reads the active feature's approved `plan.md` and `tasks.md`, selects the configured provider, and implements tasks in batches. After each batch it performs a review/fix loop. As tasks are completed, their checkboxes in `tasks.md` are marked. Execution progress and code review rounds are recorded in `reviews/plan-review.md`.
 
 **Why this priority**: Orchestrated execution is the payoff of the entire review chain but depends on P1 and P2 being solid first. A working implementation that is not yet fully polished is still deliverable.
 
-**Independent Test**: Can be tested by running `/speckit.peer.execute` on a feature with approved `plan.md` and `tasks.md`, verifying that at least one task checkbox is checked off in `tasks.md` and at least one review round appears in `code-review.md`.
+**Independent Test**: Can be tested by running `/speckit.peer.execute` on a feature with approved `plan.md` and `tasks.md`, verifying that at least one task checkbox is checked off in `tasks.md` and at least one code review round appears in `plan-review.md`.
 
 **Acceptance Scenarios**:
 
-1. **Given** approved `plan.md` and `tasks.md`, **When** the user runs `/speckit.peer.execute`, **Then** tasks are implemented in batches, each batch is followed by a code review round appended to `code-review.md`, and completed task checkboxes are updated in `tasks.md`.
+1. **Given** approved `plan.md` and `tasks.md`, **When** the user runs `/speckit.peer.execute`, **Then** tasks are implemented in batches, each batch is followed by a code review round appended to `plan-review.md`, and completed task checkboxes are updated in `tasks.md`.
 2. **Given** a previously interrupted execution session, **When** the user re-runs `/speckit.peer.execute`, **Then** already-completed tasks are not re-executed.
 3. **Given** a persisted provider session in `provider-state.json`, **When** `/speckit.peer.execute` is invoked for a subsequent round, **Then** the stored session is reused rather than starting a new one.
 4. **Given** the stored session in `provider-state.json` is expired or invalid, **When** `/speckit.peer.execute` runs, **Then** a new session is started automatically without user intervention.
@@ -91,7 +91,7 @@ A developer configures which AI provider backs the peer commands via `.specify/p
 - **FR-001**: Users MUST be able to invoke `/speckit.peer.review` with any of four artifact targets: `spec`, `research`, `plan`, `tasks`.
 - **FR-002**: Each review invocation MUST produce or update a review file at `specs/<feature>/reviews/<artifact>-review.md`.
 - **FR-003**: Review rounds MUST be append-only; rounds are separated by `---` and new rounds are appended at the end of the file; no previous round may be overwritten or deleted.
-- **FR-004**: Each artifact review round MUST conclude with a `Consensus Status:` line using one of: `NEEDS_REVISION`, `MOSTLY_GOOD`, or `APPROVED`. Each code review round (produced by `/speckit.peer.execute`) MUST conclude with a `Verdict:` line using one of: `NEEDS_FIX` or `APPROVED`.
+- **FR-004**: Each artifact review round MUST conclude with a `Consensus Status:` line using one of: `NEEDS_REVISION`, `MOSTLY_GOOD`, `APPROVED`, or `BLOCKED`. Each code review round (produced by `/speckit.peer.execute`) MUST conclude with a `Verdict:` line using one of: `NEEDS_FIX` or `APPROVED`.
 - **FR-005**: `/speckit.peer.review tasks` MUST load all four artifacts (spec.md, research.md, plan.md, tasks.md) before producing its assessment; any missing artifact MUST be reported clearly before review proceeds.
 - **FR-006**: Each artifact type MUST be reviewed against a type-specific rubric: spec (scope, ambiguity, testability, missing edge cases), research (decision quality, alternatives, unresolved blockers), plan (architecture, feasibility, sequencing), tasks (coverage, dependency order, missing test tasks, constitution alignment).
 - **FR-007**: `/speckit.peer.execute` MUST read the active feature's approved `plan.md` and `tasks.md` before beginning execution.
@@ -107,7 +107,7 @@ A developer configures which AI provider backs the peer commands via `.specify/p
 ### Key Entities
 
 - **Artifact**: A named feature document — one of `spec`, `research`, `plan`, or `tasks` — located in the active feature's specs directory.
-- **Review Round**: A single iteration of feedback appended to a review file, identified by round number, date, and a status marker (`NEEDS_REVISION`, `MOSTLY_GOOD`, or `APPROVED`).
+- **Review Round**: A single iteration of feedback appended to a review file, identified by round number, date, and a status marker (`NEEDS_REVISION`, `MOSTLY_GOOD`, `APPROVED`, or `BLOCKED`).
 - **Review File**: An append-only markdown file accumulating all review rounds for a given artifact. For the `plan` artifact and code execution, a single shared file is used (`reviews/plan-review.md`): artifact review rounds are headed `## Round N — YYYY-MM-DD`; code review rounds from `/speckit.peer.execute` are headed `## Code Review Round N — YYYY-MM-DD`. Other artifact review files follow the pattern `reviews/<artifact>-review.md`.
 - **Provider**: An AI agent adapter (Codex in v1; Copilot and Gemini reserved as stubs) responsible for executing review and implementation tasks.
 - **Provider State**: A JSON file at `specs/<feature>/reviews/provider-state.json` persisting session identifiers per provider and workflow type. For the Codex adapter, this stores the `session_id` value returned by the Codex skill script after each invocation, enabling multi-turn session continuity via `--session <id>`.

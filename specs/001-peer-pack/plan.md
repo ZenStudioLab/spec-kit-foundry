@@ -22,7 +22,7 @@ Build the `peer` pack — a Spec Kit extension that adds adversarial review and 
 
 *Locking*: review Markdown append uses cross-platform lock: try `flock -x` → fallback to lockdir (`mkdir -m 000 <file>.lock`) with lock metadata file recording pid + creation_timestamp + random nonce; stale lock detection: reclaim when pid is not running AND creation_timestamp > 30 s ago — nonce prevents false reclaim under PID reuse (ownership requires pid+nonce match); fail with actionable message after 5 retries at 200 ms intervals (1 s total); lock file removed on normal exit.
 
-*State & Recovery*: `provider-state.json` created/updated with file mode `0600`; temp files for atomic rename created with `0600` mode before write, mode verified after rename; `provider-state.json` includes `last_persisted_round: N` — initialized to 0 on first write; invariant: 0 ≤ `last_persisted_round` ≤ round count in review file; if `last_persisted_round < round count in review file`, resume from round N+1 (safe); if `last_persisted_round > round count in review file`, fail with `STATE_CORRUPTION` error and do not auto-recover; write-order: (1) acquire lock, (2) append round to review file, (3) release lock, (4) write `provider-state.json` including updated `last_persisted_round` via atomic rename.
+*State & Recovery*: `provider-state.json` created/updated with file mode `0600`; temp files for atomic rename created with `0600` mode before write, mode verified after rename; each provider/workflow entry in `provider-state.json` includes `last_persisted_round: N` — initialized to 0 on first write; invariant: 0 ≤ `last_persisted_round` ≤ round count in the corresponding review file; if `last_persisted_round < round count in review file`, resume from round N+1 (safe); if `last_persisted_round > round count in review file`, fail with `STATE_CORRUPTION` error and do not auto-recover; write-order: (1) acquire lock, (2) append round to review file, (3) release lock, (4) write `provider-state.json` including updated `last_persisted_round` via atomic rename.
 
 *Config Validation*: `CODEX_TIMEOUT_SECONDS`: integer 10–600, default 60, env var override — on timeout emit `PROVIDER_TIMEOUT` (exit 2), no retries in v1; `max_artifact_size_kb` in `peer.yml`: integer 1–10240, default 50 — invalid values fail with bounds message at startup; `peer.yml` includes `version: 1`; `provider-state.json` includes `"version": 1` — absent `version` treated as pre-v1: auto-backup as `<file>.bak.YYYYMMDDHHMMSS`, then re-create with instructions; no migration in v1.
 
@@ -100,7 +100,7 @@ All provider adapters must satisfy this contract. The v1 Codex adapter (`shared/
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | Input: artifact path | string | Yes | Absolute path to artifact file — passed via `--file` |
-| Input: prompt | string | Yes | Structured prompt: immutable system preamble + `--- BEGIN ARTIFACT ---` / `--- END ARTIFACT ---` delimiters around artifact content |
+| Input: prompt | string | Yes | Structured prompt: immutable system preamble + `--- BEGIN ARTIFACT CONTENT ---` / `--- END ARTIFACT CONTENT ---` delimiters around artifact content |
 | Input: session_id | string | No | Resume token from prior round; absent on first invocation |
 | Output: session_id | string | Yes | stdout line exactly `session_id=<value>` |
 | Output: output_path | string | Yes | stdout line exactly `output_path=<path>` — stdout contains only these two lines in this order; nothing else may appear on stdout |
@@ -120,6 +120,7 @@ All provider adapters must satisfy this contract. The v1 Codex adapter (`shared/
 | 5 | `VALIDATION_ERROR` | Precondition failed (bad artifact, missing config, etc.) |
 | 6 | `UNIMPLEMENTED_PROVIDER` | Provider is configured but has no adapter implementation |
 | 7 | `STATE_CORRUPTION` | `last_persisted_round` > review file round count; manual recovery required |
+| 8 | `PARSE_FAILURE` | Provider response is present but missing the required terminal status marker |
 
 ## Canonical File Paths
 

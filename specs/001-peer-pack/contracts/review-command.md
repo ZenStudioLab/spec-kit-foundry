@@ -56,7 +56,7 @@ The following must be true before execution begins. If any precondition fails, t
 
 3. **Load provider state** (for session continuity)
    - Read `specs/<featureId>/reviews/provider-state.json` if it exists
-   - Extract `sessions[provider][review].session_id` if present
+   - Extract `<provider>.review.session_id` if present
    - If absent, note that this is a new session
 
 4. **Determine round number**
@@ -68,7 +68,7 @@ The following must be true before execution begins. If any precondition fails, t
    - Construct the review prompt:
      - Instruct the executor to read `<artifact>` file in full
      - Instruct it to apply the artifact-type-specific rubric (from `shared/providers/<provider>/adapter-guide.md`)
-     - Ask it to raise ≥ 10 issues with severity labels, then provide a `Consensus Status`
+     - Ask it to raise ≥ 10 issues with severity labels, then provide a `Consensus Status` using one of `NEEDS_REVISION`, `MOSTLY_GOOD`, `APPROVED`, or `BLOCKED`
    - Invoke the provider via its adapter (for codex: `ask_codex.sh "<prompt>" --file <artifact-path> [--session <session_id>] --reasoning high`)
    - Retrieve `session_id` and `output_path` from the returned output
 
@@ -85,7 +85,7 @@ The following must be true before execution begins. If any precondition fails, t
      ```
 
 7. **Update provider state**
-   - Upsert `sessions[provider][review] = { session_id, updated_at: now() }` in `provider-state.json`
+   - Upsert `<provider>.review` in `provider-state.json` with `session_id`, `updated_at`, and the lifecycle/recovery fields defined in `data-model.md`
    - Create the file if it does not exist (do not overwrite other provider entries)
 
 8. **Evaluate and loop**
@@ -96,6 +96,8 @@ The following must be true before execution begins. If any precondition fails, t
    - If `MOSTLY_GOOD`:
      - Apply minor revisions to the artifact file
      - Re-run one final round to confirm
+   - If `BLOCKED`:
+     - Report the blocker and halt without auto-retrying
    - If `APPROVED`:
      - Report completion: display round number and review file path to the user
      - Exit
@@ -122,6 +124,7 @@ The following must be true before execution begins. If any precondition fails, t
 | Provider not implemented | `Provider '<name>' has no adapter in shared/providers/<name>/. Only 'codex' is supported in v1.` |
 | Codex skill not installed | `Codex skill not found at ~/.claude/skills/codex/scripts/ask_codex.sh. Install: https://skills.sh/oil-oil/codex/codex` |
 | Provider returns no output | `Provider '<name>' returned no output for round N. Review aborted. Check provider state at reviews/provider-state.json.` |
+| Provider output missing status marker | `Provider '<name>' returned invalid review output for round N (missing Consensus Status). Review aborted with PARSE_FAILURE.` |
 
 ---
 

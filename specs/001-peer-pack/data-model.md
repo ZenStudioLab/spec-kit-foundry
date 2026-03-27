@@ -165,8 +165,8 @@ Per-feature, per-provider session continuity state. Written after every successf
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `version` | `string` | Schema version, currently `"1"`. Commands read this first; treat absent or unrecognized version as cold-start and log a warning. |
-| `sessions` | `map<provider, map<workflow, SessionEntry>>` | Nested session lookup |
+| `version` | `integer` | Schema version, currently `1`. Commands read this first; absent or unrecognized versions trigger the backup/re-create flow defined in `plan.md`. |
+| `<provider_id>` | `map<workflow, SessionEntry>` | Additional top-level keys keyed by provider id (for example `codex`) |
 
 ### SessionEntry
 
@@ -177,27 +177,30 @@ Per-feature, per-provider session continuity state. Written after every successf
 | `session_started_at` | `string` | ISO 8601 timestamp when this session_id was first assigned |
 | `rounds_in_session` | `integer` | Count of rounds appended under this session_id (successful rounds only) |
 | `context_reset_reason` | `string \| null` | Why the previous session was ended: `"manual"`, `"provider_expired"`, `"max_rounds_exceeded"`, or `null` (first session / normal continuation) |
+| `last_persisted_round` | `integer` | Last round number durably written for this workflow; used to reconcile safe-forward recovery vs. `STATE_CORRUPTION` |
 
 **Storage path**: `specs/<featureId>/reviews/provider-state.json`
 
 **Example**:
 ```json
 {
-  "version": "1",
+  "version": 1,
   "codex": {
     "review": {
       "session_id": "sess_abc123",
       "updated_at": "2026-03-27T14:30:00Z",
       "session_started_at": "2026-03-27T14:00:00Z",
       "rounds_in_session": 3,
-      "context_reset_reason": null
+      "context_reset_reason": null,
+      "last_persisted_round": 3
     },
     "execute": {
       "session_id": "sess_def456",
       "updated_at": "2026-03-27T15:00:00Z",
       "session_started_at": "2026-03-27T15:00:00Z",
       "rounds_in_session": 1,
-      "context_reset_reason": null
+      "context_reset_reason": null,
+      "last_persisted_round": 1
     }
   }
 }
@@ -205,7 +208,7 @@ Per-feature, per-provider session continuity state. Written after every successf
 
 **Creation**: File does not need to exist before first invocation. If absent, the command starts a new session. On first successful response from the provider, the file is created with all `SessionEntry` fields populated.
 
-**Update rule**: Read-modify-write the nested key `sessions[provider][workflow]`. Other keys are preserved. Write is atomic: write to a temp file, then rename into place.
+**Update rule**: Read-modify-write the nested key `<provider_id>[workflow]`. Other provider/workflow keys are preserved. Write is atomic: write to a temp file, then rename into place.
 
 **Context reset rule**: Before invoking the provider for a new round, check `rounds_in_session` against the `max_rounds_per_session` value in `PeerConfig` (default: `10`). If exceeded, start a new session (omit `--session` flag), reset `rounds_in_session` to 0, and set `context_reset_reason` to `"max_rounds_exceeded"`.
 
@@ -217,7 +220,7 @@ Project-level configuration consumed by all peer commands.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `version` | `string` | Schema version, currently `"1"`. Commands check on startup; fail clearly if absent or unrecognized. |
+| `version` | `integer` | Schema version, currently `1`. Commands check on startup; fail clearly if absent or unrecognized. |
 | `default_provider` | `string` | Provider to use when `--provider` is not specified |
 | `providers` | `map<string, ProviderEntry>` | Map of all configured providers |
 | `max_rounds_per_session` | `integer` | Maximum rounds before context is automatically reset. Default: `10`. Independent of `max_context_rounds` — these two values control different aspects: session lifecycle vs. per-invocation token budget. A provider may complete a 10-round session where only the last 3 rounds are passed as context each time; this is expected behavior for token efficiency. |
@@ -234,7 +237,7 @@ Project-level configuration consumed by all peer commands.
 
 **Example**:
 ```yaml
-version: "1"
+version: 1
 default_provider: codex
 max_rounds_per_session: 10
 max_context_rounds: 3
@@ -252,7 +255,7 @@ providers:
 
 **Validation rules** (enforced by command logic at invocation time):
 1. File must exist; fail clearly with install instructions if absent
-2. `version` must be `"1"`; fail with migration guidance if absent or different
+2. `version` must be `1`; fail with migration guidance if absent or different
 3. `default_provider` must be a key in `providers`
 4. The resolved provider (from `--provider` flag or `default_provider`) must have `enabled: true`
 5. The resolved provider must have a corresponding adapter guide in `shared/providers/<id>/`
