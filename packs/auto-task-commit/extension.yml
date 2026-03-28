@@ -1,0 +1,14 @@
+schema_version: "1.0"
+
+extension:
+  id: auto-task-commit
+  name: "Auto Task Commit"
+  version: 1.0.0
+  description: "Enforce an atomic git commit after each completed task during speckit.implement"
+
+requires:
+  speckit_version: ">=0.1.0"
+
+provides:
+  memory:
+    - memory/auto-task-commit-guide.md
