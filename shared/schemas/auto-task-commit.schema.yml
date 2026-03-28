@@ -1,0 +1,38 @@
+# Schema: auto-task-commit.schema.yml
+# Validates the structure of .specify/auto-task-commit.yml
+# Version: 1
+
+$schema: "auto-task-commit:1"
+
+# Top-level required fields
+required:
+  - version
+
+properties:
+  version:
+    type: integer
+    const: 1
+    description: "Schema version. Must be exactly 1."
+
+  granularity:
+    type: string
+    enum: [task, batch]
+    default: task
+    description: "When to commit: 'task' = after each individual task tick (default), 'batch' = after all tasks in a batch are complete."
+
+  commit_message_template:
+    type: string
+    description: >
+      Custom commit message template. Available variables: {featureId}, {taskText}.
+      Default: "feat({featureId}): {taskText}"
+    examples:
+      - "feat({featureId}): {taskText}"
+      - "chore({featureId}): {taskText}"
+      - "{featureId}: {taskText}"
+
+# No additionalProperties restriction — forward-compatible with future fields.
+
+# Validation rules enforced at command preflight (not in this schema):
+#   - granularity must be exactly "task" or "batch" — other values are rejected with VALIDATION_ERROR
+#   - commit_message_template must contain {featureId} and {taskText} tokens if provided
+#   - Missing version field treated as pre-v1: warn and use defaults, do not halt
