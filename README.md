@@ -58,7 +58,7 @@ test -x ~/.claude/skills/codex/scripts/ask_codex.sh && echo "OK"
 
 **From a tagged release:**
 ```bash
-specify extension add peer --from https://github.com/<you>/spec-kit-foundary/releases/download/v1.0.0/peer.zip
+specify extension add peer --from https://github.com/ZenStudioLab/spec-kit-foundary/releases/download/v1.0.0/peer.zip
 ```
 
 **From local clone (dev / monorepo):**
