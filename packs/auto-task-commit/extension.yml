@@ -10,5 +10,8 @@ requires:
   speckit_version: ">=0.1.0"
 
 provides:
+  commands:
+    - name: speckit.auto-task-commit.status
+      file: commands/status.md
   memory:
     - memory/auto-task-commit-guide.md
