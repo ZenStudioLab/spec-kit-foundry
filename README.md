@@ -7,6 +7,7 @@ A multi-pack hub for [Spec Kit](https://github.com/oil-oil/spec-kit) — install
 | Pack | Type | Commands | Status |
 |------|------|----------|--------|
 | `peer` | commands | `/speckit.peer.review`, `/speckit.peer.execute` | v1.0.0 |
+| `auto-task-commit` | memory | — | v1.0.0 |
 
 ---
 
@@ -37,6 +38,42 @@ Verifies plan and tasks reviews are approved, then dispatches unchecked `tasks.m
 
 ---
 
+## auto-task-commit pack
+
+Enforces an atomic `git commit` after every completed task during `speckit.implement`. Installed as a memory-only pack — no commands required. Works with any LLM provider.
+
+When the pack is active, the injected memory guide instructs the implementing AI to:
+- Run `git status` → `git add -A` → `git commit` after each `- [x]` tick
+- Auto-generate the commit message: `feat(<featureId>): <taskText>`
+- Skip gracefully if there is nothing to commit
+- Halt if `git commit` exits non-zero, and wait for user resolution
+
+### Configuration (optional)
+
+Create `.specify/auto-task-commit.yml` in your project root:
+
+```yaml
+version: 1
+granularity: task    # or "batch" — default: task
+commit_message_template: "feat({featureId}): {taskText}"   # optional
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `granularity` | `task` | `task` = commit after each checkbox; `batch` = commit after each group |
+| `commit_message_template` | `feat({featureId}): {taskText}` | Custom template with `{featureId}` and `{taskText}` tokens |
+
+If the file is absent, defaults apply. If it is malformed, the pack warns and continues with defaults.
+
+### Typical workflow
+
+```
+/speckit.implement            → implement tasks; pack auto-commits after each one
+git log --oneline             → one commit per task, each with a feat() message
+```
+
+---
+
 ## Prerequisites
 
 **1. Spec Kit CLI**
@@ -44,7 +81,7 @@ Verifies plan and tasks reviews are approved, then dispatches unchecked `tasks.m
 specify --version
 ```
 
-**2. Codex skill** (once per machine)
+**2. Codex skill** (required for `peer` pack only)
 ```bash
 skills install https://skills.sh/oil-oil/codex/codex
 test -x ~/.claude/skills/codex/scripts/ask_codex.sh && echo "OK"
@@ -54,7 +91,7 @@ test -x ~/.claude/skills/codex/scripts/ask_codex.sh && echo "OK"
 
 ## Installation
 
-### Install just the peer pack
+### Install the peer pack
 
 **From a tagged release:**
 ```bash
@@ -72,7 +109,25 @@ specify extension list
 # peer  1.0.0  commands: review, execute
 ```
 
-### Configure in your project
+### Install the auto-task-commit pack
+
+**From a tagged release:**
+```bash
+specify extension add auto-task-commit --from https://github.com/ZenStudioLab/spec-kit-foundary/releases/download/v1.0.0/auto-task-commit.zip
+```
+
+**From local clone (dev / monorepo):**
+```bash
+specify extension add auto-task-commit --dev /path/to/spec-kit-foundary/packs/auto-task-commit
+```
+
+Verify:
+```bash
+specify extension list
+# auto-task-commit  1.0.0  memory: auto-task-commit-guide.md
+```
+
+### Configure the peer pack in your project
 
 Create `.specify/peer.yml` in the project root:
 
@@ -128,43 +183,5 @@ specs/<featureId>/
 | `Plan has no approved review` | Run `/speckit.peer.review plan` first |
 | `Tasks readiness not approved` | Run `/speckit.peer.review tasks` and resolve findings |
 | `Provider 'x' is disabled` | Set `enabled: true` in `peer.yml` or use `default_provider: codex` |
-| `Provider 'copilot' has no adapter` | Use `codex` — copilot/gemini are unimplemented in v1 |
-
----
-
-## Repo layout
-
-```
-packs/
-  peer/
-    extension.yml               ← pack manifest
-    commands/
-      review.md                 ← /speckit.peer.review instruction file
-      execute.md                ← /speckit.peer.execute instruction file
-    memory/
-      peer-guide.md             ← workflow reference (injected by Spec Kit)
-shared/
-  providers/
-    codex/
-      adapter-guide.md          ← Codex invocation contract
-  schemas/
-    peer-providers.schema.yml   ← validation schema for peer.yml
-scripts/
-  validate-pack.sh              ← 14-case acceptance gate (< 5 s)
-```
-
----
-
-## Development
-
-Run the acceptance gate tests:
-
-```bash
-bash scripts/validate-pack.sh
-# [PASS] All 14 base matrix cases passed
-```
-
-Run a single case:
-```bash
-bash scripts/validate-pack.sh --case T-10a
-```
+| `auto-task-commit: commit failed` | Resolve the git conflict or error, then re-run `speckit.implement` |
+| `auto-task-commit: malformed config` | Fix `.specify/auto-task-commit.yml` — defaults are used until corrected |
