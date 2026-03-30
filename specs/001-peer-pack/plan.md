@@ -5,24 +5,24 @@
 
 ## Summary
 
-Build the `peer` pack — a Spec Kit extension that adds adversarial review and orchestrated execution commands on top of the existing specify workflow. The pack provides `/speckit.peer.review <artifact>` (targeting spec, research, plan, or tasks) and `/speckit.peer.execute`, both backed by a provider-abstracted adapter layer with Codex as the v1 implementation. Review rounds are append-only Markdown files; provider session state is persisted in JSON for multi-turn continuity. The pack is independently installable with no sibling-pack runtime dependencies.
+Build the `peer` pack — a Spec Kit extension that adds adversarial review and orchestrated execution commands on top of the existing specify workflow. The pack provides `/speckit.peer.review <target>` in two modes: artifact mode for `spec`, `research`, `plan`, or `tasks`, and file-delegation mode that routes explicit file paths to `/plan-review`. It also provides `/speckit.peer.execute`, both backed by a provider-abstracted adapter layer with Codex as the v1 implementation. Review rounds are append-only Markdown files; provider session state is persisted in JSON for multi-turn continuity. The pack is independently installable with no sibling-pack runtime dependencies.
 
 ## Technical Context
 
 **Language/Version**: Bash 5+ (scripts), YAML 1.2 (manifests/config), Markdown (command instruction files)
-**Primary Dependencies**: Spec Kit (`specify` CLI), `/codex` skill (`~/.claude/skills/codex/scripts/ask_codex.sh` — external prerequisite, install from https://skills.sh/oil-oil/codex/codex)
+**Primary Dependencies**: Spec Kit (`specify` CLI), `/codex` skill (`~/.claude/skills/codex/scripts/ask_codex.sh` — external prerequisite, install from https://skills.sh/oil-oil/codex/codex), host-provided `/plan-review` skill or command for explicit file-path delegation mode
 **Storage**: File-based — append-only Markdown review files, JSON provider-state, YAML peer config
-**Testing**: `scripts/validate-pack.sh <pack-dir>`, manual install scenarios (6 mandatory cases per constitution); automated test matrix: first-run state init (no review file, no `provider-state.json`), session reuse (`--session <id>` passed on round 2+), missing `.specify/peer.yml`, disabled provider, unimplemented provider, malformed `provider-state.json`, append-only integrity (no round overwritten), artifact enum rejection (unknown artifact name)
+**Testing**: `scripts/validate-pack.sh <pack-dir>`, manual install scenarios (including explicit file-path delegation to `/plan-review` with no peer-state writes); automated validation matrix covers the artifact/execute workflow, while delegated file-path review is validated as an explicit manual scenario alongside it: first-run state init (no review file, no `provider-state.json`), session reuse (`--session <id>` passed on round 2+), missing `.specify/peer.yml`, disabled provider, unimplemented provider, malformed `provider-state.json`, append-only integrity (no round overwritten), unknown-target rejection (target is neither an artifact keyword nor an existing file path)
 **Target Platform**: Linux/macOS (wherever Spec Kit runs)
 **Project Type**: Spec Kit extension pack (command pack)
 **Performance Goals**: `validate-pack.sh` < 5 s (command-pack acceptance gate); command preflight checks < 500 ms; default max artifact input: 50 KB, configurable via `max_artifact_size_kb` in `peer.yml`; `build-all.sh` < 60 s (global CI context; informational only, not a command-pack acceptance gate)
 **Constraints**:
 
-*I/O Contract*: command stdout exclusively for `session_id=<value>` then `output_path=<path>` (exactly two lines in that order) — nothing else may appear on stdout; command stderr receives all human-readable output: errors use canonical format `[peer/<command>] ERROR: <ERROR_CODE>: <message>`, success summaries use `[peer/<command>]` prefix and include artifact name, round number, review file path, consensus status; verbose/debug output goes to stderr gated by `PEER_DEBUG=1` env var.
+*I/O Contract*: in review mode, adapter stdout may emit `session_id=<value>` and `output_path=<path>` metadata; absence of one or both lines is warning-only as long as the review file is written successfully. Human-readable output stays on stderr: errors use canonical format `[peer/<command>] ERROR: <ERROR_CODE>: <message>`, success summaries use `[peer/<command>]` prefix and include artifact name, round number, review file path, consensus status; verbose/debug output goes to stderr gated by `PEER_DEBUG=1` env var.
 
-*Locking*: review Markdown append uses cross-platform lock: try `flock -x` → fallback to lockdir (`mkdir -m 000 <file>.lock`) with lock metadata file recording pid + creation_timestamp + random nonce; stale lock detection: reclaim when pid is not running AND creation_timestamp > 30 s ago — nonce prevents false reclaim under PID reuse (ownership requires pid+nonce match); fail with actionable message after 5 retries at 200 ms intervals (1 s total); lock file removed on normal exit.
+*Locking*: `/speckit.peer.review` instructs the provider to write review rounds directly to the review file and does not add an extra lock layer in v1. `/speckit.peer.execute` still uses guarded append semantics for code-review rounds written to `plan-review.md`.
 
-*State & Recovery*: `provider-state.json` created/updated with file mode `0600`; temp files for atomic rename created with `0600` mode before write, mode verified after rename; each provider/workflow entry in `provider-state.json` includes `last_persisted_round: N` — initialized to 0 on first write; invariant: 0 ≤ `last_persisted_round` ≤ round count in the corresponding review file; if `last_persisted_round < round count in review file`, resume from round N+1 (safe); if `last_persisted_round > round count in review file`, fail with `STATE_CORRUPTION` error and do not auto-recover; write-order: (1) acquire lock, (2) append round to review file, (3) release lock, (4) write `provider-state.json` including updated `last_persisted_round` via atomic rename.
+*State & Recovery*: `provider-state.json` is written via temp file + atomic rename after consensus is read from the provider-written review file. Each provider/workflow entry includes `last_persisted_round: N`; the review command increments it after a normal provider-written round or a manually appended `PARSE_FAILURE` note. Unsupported/absent `version` values are backed up and reinitialized; unparseable JSON fails fast.
 
 *Config Validation*: `CODEX_TIMEOUT_SECONDS`: integer 10–600, default 60, env var override — on timeout emit `PROVIDER_TIMEOUT` (exit 2), no retries in v1; `max_artifact_size_kb` in `peer.yml`: integer 1–10240, default 50 — invalid values fail with bounds message at startup; `peer.yml` includes `version: 1`; `provider-state.json` includes `"version": 1` — absent `version` treated as pre-v1: auto-backup as `<file>.bak.YYYYMMDDHHMMSS`, then re-create with instructions; no migration in v1.
 
@@ -32,7 +32,7 @@ Build the `peer` pack — a Spec Kit extension that adds adversarial review and 
 
 *VCS Policy*: `provider-state.json` and `*.bak.*` files are runtime state and MUST be listed in `.gitignore`.
 
-*Other*: no mandatory auto-hooks; review rounds are append-only (no overwrites); session reuse via `--session <id>` codex skill flag; unsupported provider adapters must fail clearly without affecting Codex; artifact input restricted to `spec|research|plan|tasks` enum — arbitrary paths rejected; artifact content treated as opaque data in adapter prompts (structurally delimited, never interpolated as instructions).
+*Other*: no mandatory auto-hooks; review rounds are append-only (no overwrites); session reuse via `--session <id>` codex skill flag; unsupported provider adapters must fail clearly without affecting Codex; artifact mode input is restricted to `spec|research|plan|tasks`, while explicit existing file paths delegate to `/plan-review`; artifact content treated as opaque data in adapter prompts (structurally delimited, never interpolated as instructions).
 **Scale/Scope**: Single extension pack consumed by individual developers; no server-side components
 
 ## Constitution Check
@@ -68,7 +68,7 @@ specs/001-peer-pack/
 packs/peer/
 ├── extension.yml                  # Pack manifest
 ├── commands/
-│   ├── review.md                  # /speckit.peer.review <artifact> instruction file
+│   ├── review.md                  # /speckit.peer.review <target> instruction file
 │   └── execute.md                 # /speckit.peer.execute instruction file
 ├── memory/
 │   └── peer-guide.md              # Peer workflow reference (loaded into agent context)
@@ -100,10 +100,10 @@ All provider adapters must satisfy this contract. The v1 Codex adapter (`shared/
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | Input: artifact path | string | Yes | Absolute path to artifact file — passed via `--file` |
-| Input: prompt | string | Yes | Structured prompt: immutable system preamble + `--- BEGIN ARTIFACT CONTENT ---` / `--- END ARTIFACT CONTENT ---` delimiters around artifact content |
+| Input: prompt | string | Yes | Short natural-language review instruction; artifact and review files are passed separately via `--file` |
 | Input: session_id | string | No | Resume token from prior round; absent on first invocation |
-| Output: session_id | string | Yes | stdout line exactly `session_id=<value>` |
-| Output: output_path | string | Yes | stdout line exactly `output_path=<path>` — stdout contains only these two lines in this order; nothing else may appear on stdout |
+| Output: session_id | string | No | Optional stdout metadata line `session_id=<value>` when emitted by the adapter |
+| Output: output_path | string | No | Optional stdout metadata line `output_path=<path>` when emitted by the adapter |
 | Stderr contract | — | Yes | stderr receives all human-readable output: errors with canonical format `[peer/<command>] ERROR: <ERROR_CODE>: <message>`; success summaries with `[peer/<command>]` prefix; verbose/debug gated by `PEER_DEBUG=1` |
 | Exit code 0 | — | Yes | Indicates success |
 | Exit code nonzero | — | Yes | Failure; actionable `[peer/<command>] ERROR: <ERROR_CODE>: <message>` written to stderr |
@@ -115,7 +115,7 @@ All provider adapters must satisfy this contract. The v1 Codex adapter (`shared/
 | 0 | — | Success |
 | 1 | `PROVIDER_UNAVAILABLE` | Script not found or not executable |
 | 2 | `PROVIDER_TIMEOUT` | LLM did not respond within timeout |
-| 3 | `PROVIDER_EMPTY_RESPONSE` | Adapter reported success semantics but wrapper received absent or empty `output_path` |
+| 3 | `PROVIDER_EMPTY_RESPONSE` | Adapter reported success semantics but no review file or usable summary was produced |
 | 4 | `SESSION_INVALID` | `--session <id>` provided but not resumable |
 | 5 | `VALIDATION_ERROR` | Precondition failed (bad artifact, missing config, etc.) |
 | 6 | `UNIMPLEMENTED_PROVIDER` | Provider is configured but has no adapter implementation |
@@ -144,12 +144,12 @@ All provider adapters must satisfy this contract. The v1 Codex adapter (`shared/
 | Deliverable | FR Coverage | Entry Criterion | Exit Criterion |
 |-------------|-------------|-----------------|----------------|
 | `packs/peer/extension.yml` | FR-001, FR-013, FR-014 | Plan APPROVED | Validates with `validate-pack.sh` |
-| `packs/peer/commands/review.md` | FR-001–FR-004, FR-008, FR-012, FR-014 | extension.yml exists | All 4 artifact types work; enum gate rejects unknown names |
-| `packs/peer/commands/execute.md` | FR-005–FR-007, FR-011, FR-012, FR-014 | plan review APPROVED (SC-004) | All tasks.md checkboxes complete; code review rounds appended |
-| `packs/peer/memory/peer-guide.md` | FR-013 | commands/ exists | Injected into agent context on install |
-| `shared/providers/codex/adapter-guide.md` | FR-009, FR-010 | commands/ exists | Codex invocation yields correct `session_id` + `output_path` |
-| `shared/schemas/peer-providers.schema.yml` | FR-008, FR-015 | extension.yml exists | Accepts valid peer.yml; rejects invalid provider config |
-| `scripts/validate-pack.sh` | SC-001–SC-006 | All source files exist + `.gitignore` contains state-file patterns | Passes all 14 automated test matrix cases; completes < 5 s |
+| `packs/peer/commands/review.md` | FR-001–FR-006, FR-011–FR-013, FR-015 | extension.yml exists | Artifact review, tasks review, and file-path delegation behavior are all documented consistently |
+| `packs/peer/commands/execute.md` | FR-007–FR-013, FR-015 | review.md readiness rules defined | All tasks.md checkboxes complete; code review rounds appended |
+| `packs/peer/memory/peer-guide.md` | FR-015 | commands/ exists | Injected into agent context on install |
+| `shared/providers/codex/adapter-guide.md` | FR-011–FR-013 | commands/ exists | Codex invocation writes the expected review/result files; stdout metadata is well-formed when emitted |
+| `shared/schemas/peer-providers.schema.yml` | FR-011, FR-015 | extension.yml exists | Accepts valid peer.yml; rejects invalid provider config |
+| `scripts/validate-pack.sh` | SC-001–SC-006 | All source files exist + `.gitignore` contains state-file patterns | Passes all 14 automated artifact/execute matrix cases; delegated file-path review is validated separately as a manual acceptance check |
 | `.gitignore` (state-file entries) | FR-003, FR-010 | validate-pack.sh exists | Contains `specs/*/reviews/provider-state.json` and `specs/*/reviews/*.bak.*` patterns |
 
 **Automated test manifest**:
@@ -163,27 +163,31 @@ All provider adapters must satisfy this contract. The v1 Codex adapter (`shared/
 | T-05 | Unimplemented provider | `validate-pack.sh --case unimplemented-provider` | Exit 6 (`UNIMPLEMENTED_PROVIDER`) with v1-only message |
 | T-06 | Malformed provider-state.json | `validate-pack.sh --case bad-state` | Fails with schema-version error |
 | T-07 | Append-only integrity | `validate-pack.sh --case append-only` | Existing round is never overwritten |
-| T-08 | Artifact enum rejection | `validate-pack.sh --case bad-artifact` | Exit 5 rejecting unknown artifact name |
+| T-08 | Unknown target rejection | `validate-pack.sh --case bad-artifact` | Exit 5 when the target is neither an artifact keyword nor an existing file path |
 | T-09 | Provider timeout | `validate-pack.sh --case timeout` | Exit 2 with `PROVIDER_TIMEOUT` message |
 | T-10a | Lock release before timeout | `validate-pack.sh --case lock-release` | Competing lock released before timeout; second caller succeeds |
 | T-10b | Stale lock removal | `validate-pack.sh --case stale-lock` | Lock older than 30 s with dead pid is reclaimed; caller succeeds |
 | T-11 | Orphan-round forward recovery | `validate-pack.sh --case orphan-recovery` | `last_persisted_round` < review round count; resumes from next round |
 | T-11b | State corruption detection | `validate-pack.sh --case state-corruption` | `last_persisted_round` > review round count; fails with `STATE_CORRUPTION` error |
-| T-12 | Stdout contract validation | `validate-pack.sh --case stdout-contract` | Only `session_id=` and `output_path=` lines on stdout; extra output fails test |
+| T-12 | Stdout metadata validation | `validate-pack.sh --case stdout-contract` | If stdout metadata is emitted, only `session_id=` and `output_path=` lines appear on stdout |
 | T-13 | VCS ignore check | `validate-pack.sh --case vcs-ignore` | `provider-state.json` and `*.bak.*` patterns present in `.gitignore` |
 | T-14 | CODEX_SKILL_PATH warning redaction | `validate-pack.sh --case skill-path-warn` | Override path emits warning with redacted home segment; full path only with `PEER_DEBUG=1` |
+
+**Manual validation scenario**:
+
+| Case ID | Description | Invocation | Expected Result |
+|---------|-------------|------------|-----------------|
+| M-01 | Delegated file-path review | `/speckit.peer.review docs/plans/example.md` | Routes to `/plan-review`; no `specs/<feature>/reviews/*` files or `provider-state.json` are created or modified |
 
 **Phase dependency order**: `extension.yml` → `commands/` → `memory/` → `shared/` → `scripts/`
 
 **FR → file traceability**:
-- FR-001 review command / FR-002 artifact rubrics: `review.md` + `adapter-guide.md`
-- FR-003 append-only rounds: `review.md` (atomic write + flock constraints)
-- FR-004 session continuity / FR-010 session persistence: `review.md` + `execute.md` + `provider-state.json`
-- FR-005 readiness gate: `execute.md` (plan review APPROVED check)
-- FR-006 batch execution / FR-007 checkbox updates: `execute.md`
-- FR-008 provider config / FR-015 provider schema: `peer-providers.schema.yml` + `peer.yml`
-- FR-009 Codex adapter: `adapter-guide.md`
-- FR-011 execute command: `execute.md`
-- FR-012 provider error isolation: enum gate in commands + error taxonomy
-- FR-013 memory injection: `peer-guide.md` + `extension.yml`
-- FR-014 no mandatory hooks: `extension.yml` (`hooks: []`)
+- FR-001, FR-002, FR-005, FR-006: `review.md`
+- FR-003: `review.md` + review file conventions
+- FR-004: `review.md` for artifact consensus; `execute.md` for code-review verdicts
+- FR-007, FR-008, FR-009, FR-010: `execute.md`
+- FR-011: `peer-providers.schema.yml` + `review.md` + `execute.md`
+- FR-012: `review.md` + `execute.md` + adapter error taxonomy
+- FR-013: `review.md` + `execute.md` + `provider-state.json` conventions
+- FR-014: `extension.yml` (`hooks: []`)
+- FR-015: `extension.yml` + command docs + injected memory

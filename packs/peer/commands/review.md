@@ -3,15 +3,21 @@ id: peer.review
 command: speckit.peer.review
 version: 1.0.0
 pack: peer
-description: "Adversarial peer review of a Spec Kit artifact using a configured AI provider."
-invocation: "/speckit.peer.review <artifact> [--provider <name>] [--feature <id>]"
+description: "Adversarial peer review of a Spec Kit artifact, or delegation to /plan-review for explicit file paths."
+invocation: "/speckit.peer.review <target> [--provider <name>] [--feature <id>]"
 ---
 
 # Command: `/speckit.peer.review`
 
 ## Purpose
 
-Invoke an adversarial peer review loop against a Spec Kit artifact. Each iteration:
+Invoke an adversarial peer review loop against a Spec Kit artifact, or delegate to `/plan-review` when the user supplies an explicit file path.
+
+There are two execution modes:
+- **Artifact mode**: `<target>` is one of `spec`, `research`, `plan`, or `tasks`. Run the full peer-review loop described below.
+- **File delegation mode**: `<target>` resolves to an existing file path. Bypass the peer pack workflow entirely and invoke `/plan-review <file>` on that path.
+
+In artifact mode, each iteration:
 1. Codex reviews the artifact and appends a round to the review file with a `Consensus Status`.
 2. Claude reads the findings, evaluates which are valid, and **revises the artifact directly**.
 3. If status is `NEEDS_REVISION` → automatically proceed to the next round (back to Step 2.6).
@@ -26,47 +32,75 @@ The loop continues until a terminal consensus (`APPROVED`, `MOSTLY_GOOD` with us
 ## Invocation
 
 ```
-/speckit.peer.review <artifact> [--provider <name>] [--feature <id>]
+/speckit.peer.review <target> [--provider <name>] [--feature <id>]
 ```
 
 **Parameters**:
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `artifact` | Yes | One of `spec`, `research`, `plan`, `tasks` |
-| `--provider <name>` | No | Override `default_provider` from `.specify/peer.yml` |
-| `--feature <id>` | No | Explicit feature id when cwd context is ambiguous |
+| `target` | Yes | Either one of `spec`, `research`, `plan`, `tasks`, or an existing file path |
+| `--provider <name>` | No | Override `default_provider` from `.specify/peer.yml`; ignored in file delegation mode |
+| `--feature <id>` | No | Explicit feature id when cwd context is ambiguous; ignored in file delegation mode |
 
 ---
 
 ## Role Model
+
+Artifact mode only. File delegation mode is handled separately in Step 1.1a and does not use the peer adapter.
 
 | Role | Actor | Responsibility |
 |------|-------|----------------|
 | **Orchestrator** | Claude | Resolve feature/config/state; assemble prompts; invoke provider adapter via terminal; read consensus; **revise the artifact based on valid findings**; loop until terminal consensus; persist state; report outcomes. **Never generates review content.** |
 | **Provider** | Codex (or configured provider) | Generate all review content and status markers. |
 
-> **CRITICAL CONSTRAINT**: You are the ORCHESTRATOR, not the REVIEWER.
+> **CRITICAL CONSTRAINT (artifact mode only)**: You are the ORCHESTRATOR, not the REVIEWER.
 >
-> Do not emit any review feedback, critique, or consensus status in this response before the Adapter Invocation Gate passes.
+> In artifact mode, do not emit any review feedback, critique, or consensus status in this response before the Adapter Invocation Gate passes.
 > - You MUST invoke `ask_codex.sh` via terminal to obtain review content.
 > - You MUST NOT write review feedback, critique, or consensus status yourself.
 > - If the provider is unavailable, ABORT and report the error. Never fall back to generating review content inline.
 >
-> This boundary is invariant. If the provider is unavailable, the command halts.
+> This boundary is invariant for artifact mode. If the provider is unavailable, the artifact-review command path halts.
 
 ---
 
 ## Part 1: Preflight, Config, and Feature Resolution
 
-### Step 1.1 — Artifact Enum Gate
+### Step 1.1 — Target Mode Resolution Gate
 
-Validate that `<artifact>` is exactly one of `spec`, `research`, `plan`, or `tasks`.
+Resolve `<target>` in this order:
 
-If the value is anything else:
-- Emit to stderr: `[peer/review] ERROR: VALIDATION_ERROR: unknown artifact '<x>'; must be one of spec|research|plan|tasks`
+1. If `<target>` is exactly one of `spec`, `research`, `plan`, or `tasks`, set `review_mode=artifact` and `artifact=<target>`.
+2. Else, if `<target>` resolves to an existing file path (relative or absolute), set `review_mode=file` and `input_file=<resolved absolute path>`.
+3. Else fail.
+
+If the value is neither a supported artifact target nor an existing file path:
+- Emit to stderr: `[peer/review] ERROR: VALIDATION_ERROR: unknown target '<x>'; must be one of spec|research|plan|tasks or an existing file path`
 - Exit with code `5`
 - **Do NOT create, modify, or read any review file or provider-state.json**
+
+### Step 1.1a — File Delegation Fast Path
+
+> **File delegation mode**: This mode bypasses the artifact-mode Codex review loop above. Treat `/plan-review` as the sole executor for the delegated file review.
+
+If `review_mode=file`:
+
+1. Treat `input_file` as the sole review subject.
+2. Invoke `/plan-review <input_file>` and delegate the entire request to that skill.
+3. Return the delegated result to the user.
+
+In file delegation mode:
+- Do **NOT** load `.specify/peer.yml`
+- Do **NOT** resolve `featureId`
+- Ignore `--provider` and `--feature` if they were supplied
+- Do **NOT** read or write any file under `specs/<featureId>/reviews/`
+- Do **NOT** create or update `provider-state.json`
+- Do **NOT** invoke `ask_codex.sh` through the peer adapter path
+
+If `/plan-review` fails, surface that failure unchanged and halt.
+
+All remaining steps in this command apply to `review_mode=artifact` only.
 
 ### Step 1.2 — Feature Resolution
 
@@ -133,6 +167,8 @@ If provider is `codex`:
 
 ### Step 1.6 — Validate Artifact File
 
+Artifact mode only.
+
 Check `specs/<featureId>/<artifact>.md`:
 - Must exist
 - Must be non-empty
@@ -150,6 +186,8 @@ If `CODEX_TIMEOUT_SECONDS` env var is set:
 
 ### Step 1.8 — Bootstrap Review Directory and Review File
 
+Artifact mode only.
+
 After all precondition checks pass:
 
 1. Ensure `specs/<featureId>/reviews/` exists — create with `mkdir -p` if absent
@@ -163,6 +201,8 @@ After all precondition checks pass:
 ---
 
 ## Part 2: State Recovery, Session Lifecycle, Round Counting, and Prompt Assembly
+
+Artifact mode only.
 
 ### Step 2.1 — Load and Recover Provider State
 
@@ -323,6 +363,8 @@ Before proceeding to Part 3, the following must be true:
 
 ## Part 3: Consensus Extraction, State Persistence, and Reporting
 
+Artifact mode only.
+
 > Codex writes the review directly to the review file (as instructed in Step 2.6). Part 3 only reads back the consensus status and persists provider state.
 
 ### Step 3.1 — Read Consensus from Review File
@@ -400,7 +442,7 @@ All debug/verbose output gated by `PEER_DEBUG=1` env var.
 | 0 | — | Success |
 | 1 | `PROVIDER_UNAVAILABLE` | Codex script not found or not executable |
 | 2 | `PROVIDER_TIMEOUT` | Provider did not respond within `CODEX_TIMEOUT_SECONDS` |
-| 3 | `PROVIDER_EMPTY_RESPONSE` | Adapter returned success but `output_path` is absent or empty |
+| 3 | `PROVIDER_EMPTY_RESPONSE` | Adapter returned success but no review file or usable summary was produced |
 | 4 | `SESSION_INVALID` | Session could not be resumed (handled internally with one retry) |
 | 5 | `VALIDATION_ERROR` | Precondition failed |
 | 6 | `UNIMPLEMENTED_PROVIDER` | Provider configured but no adapter guide present |
@@ -411,7 +453,7 @@ All debug/verbose output gated by `PEER_DEBUG=1` env var.
 
 ## Part 5: User Story 2 — `artifact=tasks` Multi-Artifact Branch
 
-> This section extends the `review` command for the `tasks` artifact type.
+> This section extends the `review` command for the `tasks` artifact type in artifact mode.
 > Entry criterion: Parts 1–3 above are fully specified and stable.
 
 ### Step 5.1 — US2 Precondition: All Four Artifacts Required
@@ -511,9 +553,10 @@ The round counting for `tasks-review.md` follows the same rules as all other art
 ## Invariants Summary
 
 - **Append-only reviews**: No prior round in any review file is ever modified or deleted
-- **Precondition isolation**: No file is created or modified when any precondition (Steps 1.1–1.7) fails
-- **Codex writes review files**: Claude never appends review content — only Codex writes review rounds
+- **Precondition isolation**: No file is created or modified when any artifact-mode precondition (Steps 1.1–1.7) fails
+- **File delegation bypass**: Existing file-path targets are routed to `/plan-review` without loading peer config, touching peer state, or writing peer review files; `--provider` and `--feature` are ignored in this mode
+- **Review file ownership**: Codex writes normal review rounds; Claude may append only the minimal `PARSE_FAILURE` error note when the provider omitted the terminal status marker
 - **Claude revises artifacts**: After each `NEEDS_REVISION` round, Claude revises the artifact in-place before the next round
 - **State write-order**: Codex writes review → Claude reads consensus → Claude writes provider-state.json (atomic rename)
-- **Stdout contract**: Nothing on stdout — all output goes to stderr
+- **Stdout metadata**: Adapter stdout may provide `session_id=` and `output_path=` metadata only; human-readable output goes to stderr
 - **No temp files outside project**: All files written within the project directory or codex's runtime directory

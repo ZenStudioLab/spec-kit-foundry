@@ -97,14 +97,23 @@ Or review the plan after `/speckit.plan` has generated it:
 /speckit.peer.review plan
 ```
 
+You can also route a standalone file through the existing `/plan-review` skill by passing the file path directly:
+
+```bash
+/speckit.peer.review docs/plans/refining-agent-for-codex-invocation.md
+```
+
+This delegated file-path mode requires `/plan-review` to already be available in the host environment. The `peer` pack does not provide it, and any supplied `--provider` or `--feature` flags are ignored in this mode.
+
 Run peer commands from the target feature context so feature resolution is unambiguous.
 
 The command will:
-1. Load the artifact from `specs/<feature>/<artifact>.md`
-2. Invoke Codex to produce a detailed review with severity-labelled issues
-3. Append the round to `specs/<feature>/reviews/<artifact>-review.md`
-4. Return a `Consensus Status` (`NEEDS_REVISION`, `MOSTLY_GOOD`, `APPROVED`, or `BLOCKED`)
-5. If status is not acceptable, revise the artifact and re-run the same review command
+1. If the input is an artifact target, load the artifact from `specs/<feature>/<artifact>.md`
+2. If the input is an existing file path, delegate directly to `/plan-review <file>` and return that result
+3. In artifact mode, invoke Codex to produce a detailed review with severity-labelled issues
+4. In artifact mode, append the round to `specs/<feature>/reviews/<artifact>-review.md`
+5. In artifact mode, return a `Consensus Status` (`NEEDS_REVISION`, `MOSTLY_GOOD`, `APPROVED`, or `BLOCKED`)
+6. If artifact-mode status is not acceptable, revise the artifact and re-run the same review command
 
 ---
 

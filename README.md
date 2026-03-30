@@ -16,10 +16,19 @@ Adds adversarial AI peer review and Codex-orchestrated batch task execution to y
 
 ### Commands
 
-**`/speckit.peer.review <artifact>`**
-Submits a Spec Kit artifact to a Codex peer reviewer. Appends a structured review round (issues, severity labels, consensus status) to `specs/<feature>/reviews/<artifact>-review.md`.
+**`/speckit.peer.review <target>`**
+If `<target>` is `spec`, `research`, `plan`, or `tasks`, submits that Spec Kit artifact to a Codex peer reviewer and appends a structured review round (issues, severity labels, consensus status) to `specs/<feature>/reviews/<artifact>-review.md`.
 
-Supported artifacts: `spec`, `research`, `plan`, `tasks`
+If `<target>` is an existing file path, the command delegates to `/plan-review <file>` instead of running the peer pack artifact workflow.
+
+In file-path delegation mode, `--provider` and `--feature` are ignored.
+
+Supported artifact targets: `spec`, `research`, `plan`, `tasks`
+
+Example file-path delegation:
+```bash
+/speckit.peer.review docs/plans/refining-agent-for-codex-invocation.md
+```
 
 **`/speckit.peer.execute`**
 Verifies plan and tasks reviews are approved, then dispatches unchecked `tasks.md` checkboxes to Codex in coherent batches. Each batch is followed by a code review loop. Claude orchestrates; Codex implements.
@@ -50,6 +59,10 @@ skills install https://skills.sh/oil-oil/codex/codex
 test -x ~/.claude/skills/codex/scripts/ask_codex.sh && echo "OK"
 ```
 
+**3. `/plan-review` availability** (only for explicit file-path targets)
+
+File-path delegation relies on an existing `/plan-review` skill or command in the host environment. The `peer` pack does not bundle it.
+
 ---
 
 ## Installation
@@ -58,12 +71,12 @@ test -x ~/.claude/skills/codex/scripts/ask_codex.sh && echo "OK"
 
 **From a tagged release:**
 ```bash
-specify extension add peer --from https://github.com/ZenStudioLab/spec-kit-foundary/releases/download/v1.0.0/peer.zip
+specify extension add --from https://github.com/ZenStudioLab/spec-kit-foundary/releases/download/v1.0.0/peer.zip
 ```
 
 **From local clone (dev / monorepo):**
 ```bash
-specify extension add peer --dev /path/to/spec-kit-foundary/packs/peer
+specify extension add --dev /path/to/spec-kit-foundary/packs/peer
 ```
 
 Verify:
@@ -125,6 +138,7 @@ specs/<featureId>/
 |-------|-----|
 | `peer.yml not found` | Create `.specify/peer.yml` as shown above |
 | `Codex skill not found` | Run `skills install https://skills.sh/oil-oil/codex/codex` |
+| `plan-review not found` | Install or enable the host `/plan-review` skill before using file-path targets |
 | `Plan has no approved review` | Run `/speckit.peer.review plan` first |
 | `Tasks readiness not approved` | Run `/speckit.peer.review tasks` and resolve findings |
 | `Provider 'x' is disabled` | Set `enabled: true` in `peer.yml` or use `default_provider: codex` |
@@ -161,8 +175,10 @@ Run the acceptance gate tests:
 
 ```bash
 bash scripts/validate-pack.sh
-# [PASS] All 14 base matrix cases passed
+# [PASS] All 14 base artifact/execute matrix cases passed
 ```
+
+Delegated file-path review is validated separately because it depends on a host-provided `/plan-review` skill/command and must assert the absence of peer-state writes.
 
 Run a single case:
 ```bash

@@ -9,16 +9,16 @@
 ## Invocation
 
 ```bash
-/speckit.peer.review <artifact> [--provider <name>] [--feature <id>]
+/speckit.peer.review <target> [--provider <name>] [--feature <id>]
 ```
 
 ### Parameters
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `artifact` | Yes | One of `spec`, `research`, `plan`, `tasks` |
-| `--provider <name>` | No | Override `default_provider` from `.specify/peer.yml` |
-| `--feature <id>` | No | Explicit feature id when feature context is ambiguous |
+| `target` | Yes | One of `spec`, `research`, `plan`, `tasks`, or an existing file path |
+| `--provider <name>` | No | Override `default_provider` from `.specify/peer.yml`; ignored for file-path delegation |
+| `--feature <id>` | No | Explicit feature id when feature context is ambiguous; ignored for file-path delegation |
 
 ### Examples
 
@@ -31,6 +31,9 @@
 
 # Review tasks for a specific feature
 /speckit.peer.review tasks --feature 001-peer-pack
+
+# Delegate a standalone file to /plan-review
+/speckit.peer.review docs/plans/refining-agent-for-codex-invocation.md
 ```
 
 ---
@@ -39,32 +42,39 @@
 
 The command halts on any failed precondition with an actionable error and no partial normal-round append.
 
-1. `artifact` must be one of `spec|research|plan|tasks`.
-2. Feature context must resolve in this order:
+1. `target` must be either one of `spec|research|plan|tasks` or an existing file path.
+2. Artifact-keyword precedence applies: if `target` is exactly `spec`, `research`, `plan`, or `tasks`, artifact mode wins even if a file with the same name exists in the current directory.
+3. If `target` is not an artifact enum, it must resolve to an existing file path.
+4. When `target` resolves to an existing file path, the command MUST delegate to `/plan-review <file>` and halt after returning the delegated result.
+5. File-path delegation mode MUST NOT load `.specify/peer.yml`, resolve feature context, read/write `specs/<featureId>/reviews/*`, or update `provider-state.json`; any supplied `--provider` or `--feature` flags are ignored.
+6. Feature context must resolve in this order:
    - current working directory spec context
    - then `--feature <id>`
    - otherwise fail and list available `specs/*` directories
-3. `.specify/peer.yml` must exist and `version` must be integer `1`.
-4. Resolved provider (`--provider` or `default_provider`) must exist in `providers`, be `enabled: true`, and have `mode: orchestrated`.
-5. Adapter guide must exist at `shared/providers/<provider>/adapter-guide.md`.
-6. For `codex`, script discovery order is:
+7. `.specify/peer.yml` must exist and `version` must be integer `1`.
+8. Resolved provider (`--provider` or `default_provider`) must exist in `providers`, be `enabled: true`, and have `mode: orchestrated`.
+9. Adapter guide must exist at `shared/providers/<provider>/adapter-guide.md`.
+10. For `codex`, script discovery order is:
    - `CODEX_SKILL_PATH` (if set; must exist, be readable, executable)
    - `~/.claude/skills/codex/scripts/ask_codex.sh`
-7. When `CODEX_SKILL_PATH` override is used, emit warning:
+11. When `CODEX_SKILL_PATH` override is used, emit warning:
    - default: `[peer/WARN] using CODEX_SKILL_PATH override: ~/...`
    - with `PEER_DEBUG=1`: full absolute path may be shown
-8. Target artifact file `specs/<featureId>/<artifact>.md` must exist and be non-empty.
-9. If `artifact=tasks`, all four artifacts must exist and be non-empty:
+12. Target artifact file `specs/<featureId>/<artifact>.md` must exist and be non-empty.
+13. If `artifact=tasks`, all four artifacts must exist and be non-empty:
    - `spec.md`, `research.md`, `plan.md`, `tasks.md`
-10. `max_artifact_size_kb` must validate as integer `1..10240` when present.
-11. `CODEX_TIMEOUT_SECONDS` must validate as integer `10..600` when present (default `60`).
-12. Command is explicit-only; no mandatory auto-hooks.
+14. `max_artifact_size_kb` must validate as integer `1..10240` when present.
+15. `CODEX_TIMEOUT_SECONDS` must validate as integer `10..600` when present (default `60`).
+16. Command is explicit-only; no mandatory auto-hooks.
 
 ---
 
 ## Execution Steps
 
 1. **Resolve feature and paths**
+   - Resolve `target` with artifact-keyword precedence first, then file-path delegation.
+   - If `target` resolves to an existing file path, delegate immediately to `/plan-review <resolved-path>` and stop. No remaining execution steps apply.
+   - All remaining execution steps in this contract apply to artifact mode only.
    - Resolve `featureId` using precondition order.
    - Artifact path: `specs/<featureId>/<artifact>.md`.
    - Review path: `specs/<featureId>/reviews/<artifact>-review.md` (`plan` uses `plan-review.md`).
@@ -101,104 +111,68 @@ The command halts on any failed precondition with an actionable error and no par
 6. **Build review context**
    - Enforce size guards before prompt assembly:
    - each included artifact file must be `<= max_artifact_size_kb`
-   - for `artifact=tasks`, enforce both per-file and combined prompt payload bounds
+   - for `artifact=tasks`, enforce the per-file bounds before adapter invocation
    - fail with `VALIDATION_ERROR` before adapter invocation on size overflow
    - Load prior context rounds from current review file:
    - include at most last `max_context_rounds` complete artifact rounds (default `3`)
    - exclude `## Code Review Round` sections from prior context loading
    - For `artifact in {spec,research,plan}`:
-   - inject single artifact content within canonical delimiters:
-   - `--- BEGIN ARTIFACT CONTENT ---`
-   - `--- END ARTIFACT CONTENT ---`
+   - assemble a short natural-language prompt; do not inline artifact contents
    - For `artifact=tasks`, inject all four artifacts in this exact order and labeled sections:
-   - `### spec.md` + delimiters
-   - `### research.md` + delimiters
-   - `### plan.md` + delimiters
-   - `### tasks.md` + delimiters
-   - Require terminal marker line in provider response:
+   - pass `spec.md`, `research.md`, `plan.md`, `tasks.md`, and `tasks-review.md` as `--file` arguments instead of inlining them
+   - Require terminal marker line in the review written to the review file:
    - `Consensus Status: NEEDS_REVISION|MOSTLY_GOOD|APPROVED|BLOCKED`
 
 7. **Invoke provider adapter**
    - Call adapter (codex example):
-   - `ask_codex.sh "<prompt>" --file <artifact-path> [--session <session_id>] --reasoning high`
-   - Parse strict stdout contract:
-   - line 1: `session_id=<value>`
-   - line 2: `output_path=<path>`
-   - Any stdout deviation is `PARSE_FAILURE`.
+   - `ask_codex.sh "<prompt>" --file <artifact-path> --file <review-file> [--session <session_id>] --reasoning high`
+   - For `artifact=tasks`, pass all four artifacts plus `tasks-review.md` via `--file`
+   - Capture stdout metadata when present:
+   - `session_id=<value>`
+   - `output_path=<path>`
+   - Missing metadata is warning-only in review mode; the review file written by the provider is the source of truth.
 
-8. **Validate and normalize provider output**
-   - `output_path` must exist and be non-empty.
-   - Parse terminal marker from the last 5 lines using:
+8. **Read consensus from the review file**
+   - The provider writes the review directly to `specs/<featureId>/reviews/<artifact>-review.md`.
+   - Read the terminal marker from the review file using:
    - `^\*{0,2}Consensus Status\*{0,2}:\s*(NEEDS_REVISION|MOSTLY_GOOD|APPROVED|BLOCKED)$`
-   - If status is missing, do not append a normal round. Prepare an error round with code `PARSE_FAILURE`.
-   - On success, strip trailing status-marker lines from provider body and keep a single normalized status line for append.
+   - If status is missing, append an error note manually with code `PARSE_FAILURE` and retry guidance.
+   - `output_path`, when present, is informational only.
 
-9. **Append under lock (append-only)**
-   - Acquire lock with `flock -x`; fallback to lockdir (`mkdir -m 000 <file>.lock`) with metadata file containing `pid`, `creation_timestamp`, `nonce`.
-   - Stale-lock reclaim allowed only when:
-   - owning pid is not running
-   - lock age > 30 seconds
-   - ownership check uses pid+nonce to avoid PID-reuse false reclaim
-   - Retry up to 5 times at 200ms intervals; on failure emit `LOCK_CONTENTION`.
-   - Append exactly one of the schemas below, then release lock.
-
-10. **Persist provider state (atomic, merged)**
+9. **Persist provider state (atomic, merged)**
    - Upsert `<provider>.review` with:
    - `session_id`, `updated_at`, `session_started_at`, `rounds_in_session`, `context_reset_reason`, `last_persisted_round`
-   - Invariant:
-   - `0 <= last_persisted_round <= artifact_round_count`
-   - If `last_persisted_round > artifact_round_count`, fail with `STATE_CORRUPTION` (no auto-recovery).
-   - If `last_persisted_round < artifact_round_count`, safe-forward resume from next round.
-   - Write order:
-   - append round while lock held
-   - release lock
-   - write `provider-state.json` via temp file (mode `0600`) + atomic rename (final mode `0600`)
+   - Write `provider-state.json` via temp file + atomic rename.
    - Preserve other provider/workflow keys.
 
    State update matrix:
-   - normal round appended: increment `rounds_in_session`, set `last_persisted_round=N`
-   - error round appended (for example `PARSE_FAILURE`): keep `rounds_in_session` unchanged, set `last_persisted_round=N`
-   - lock contention / no append: do not write provider state
+   - normal round written by provider: increment `rounds_in_session`, set `last_persisted_round=N`
+   - error note appended manually (for example `PARSE_FAILURE`): keep `rounds_in_session` unchanged, set `last_persisted_round=N`
    - precondition failure before provider invocation: do not write provider state
 
-11. **Evaluate consensus**
+10. **Evaluate consensus**
    - `NEEDS_REVISION`: revise artifact and rerun.
    - `MOSTLY_GOOD`: apply minor revisions; optional confirmation rerun.
    - `BLOCKED`: halt and report blocker.
    - `APPROVED`: report completion path and status.
 
-12. **Emit canonical stderr summary**
+11. **Emit canonical stderr summary**
    - Success line format:
    - `[peer/review] artifact=<artifact> round=<N> review_file=<path> consensus=<status>`
    - Debug/verbose content only when `PEER_DEBUG=1`.
 
 ---
 
-## Round Append Schemas
+## Error Note Schema
 
-### Normal Artifact Round
-
-```markdown
----
-
-## Round N — YYYY-MM-DD
-
-<provider review body without terminal status marker>
-
-Consensus Status: NEEDS_REVISION | MOSTLY_GOOD | APPROVED | BLOCKED
-```
-
-### Error Round
+When the provider writes a review file entry but omits the terminal marker, append this error note:
 
 ```markdown
 ---
 
 ## Round N — YYYY-MM-DD [ERROR: <error_code>]
-
-Failed to complete round. Session state preserved. Retry with same command.
+Codex wrote the review file but did not include a Consensus Status marker. Retry with same command.
 ```
-
-Error rounds count toward the artifact round counter.
 
 ---
 
@@ -206,7 +180,7 @@ Error rounds count toward the artifact round counter.
 
 | Stream | Contract |
 |--------|----------|
-| `stdout` | Exactly two lines in order: `session_id=<value>` then `output_path=<path>` |
+| `stdout` | Optional metadata only: `session_id=<value>` and `output_path=<path>` when the adapter emits them |
 | `stderr` | Human-readable logs only; errors use `[peer/review] ERROR: <ERROR_CODE>: <message>` |
 
 ### Stderr Rules
@@ -222,7 +196,7 @@ Error rounds count toward the artifact round counter.
 | 0 | - | Success |
 | 1 | `PROVIDER_UNAVAILABLE` | Script not found or not executable |
 | 2 | `PROVIDER_TIMEOUT` | Provider timeout exceeded |
-| 3 | `PROVIDER_EMPTY_RESPONSE` | Missing/empty provider output |
+| 3 | `PROVIDER_EMPTY_RESPONSE` | Provider returned success but no review file or usable summary was produced |
 | 4 | `SESSION_INVALID` | Resume session not accepted |
 | 5 | `VALIDATION_ERROR` | Config/path/precondition failure |
 | 6 | `UNIMPLEMENTED_PROVIDER` | Provider configured but adapter absent |
@@ -232,7 +206,7 @@ Error rounds count toward the artifact round counter.
 ### Error-Code Compatibility Notes
 
 - `ADAPTER_MISSING` is a legacy alias of `UNIMPLEMENTED_PROVIDER` for error-round heading compatibility.
-- `LOCK_CONTENTION` may appear in error-round headings when lock retries are exhausted and maps to exit code `5` (`VALIDATION_ERROR`) in v1.
+- `LOCK_CONTENTION` is reserved for older review-contract drafts and is not used by the current review command path.
 
 ---
 
@@ -251,7 +225,7 @@ Error rounds count toward the artifact round counter.
 
 | Condition | Error Message |
 |-----------|---------------|
-| Unknown artifact | `Artifact must be one of spec|research|plan|tasks.` |
+| Unknown target | `Target must be one of spec|research|plan|tasks or an existing file path.` |
 | Unresolved feature context | `Could not resolve feature context. Run from feature context or pass --feature <id>.` |
 | Missing artifact file | `Artifact '<name>' not found at specs/<feature>/<name>.md.` |
 | Missing dependency for tasks review | `tasks review requires spec.md, research.md, plan.md, and tasks.md.` |
@@ -263,7 +237,6 @@ Error rounds count toward the artifact round counter.
 | Provider adapter missing | `Provider '<name>' adapter is not implemented in v1.` |
 | Codex script unavailable | `Codex skill script not found or not executable.` |
 | Missing status marker in provider output | `Provider output missing Consensus Status. Error round recorded as PARSE_FAILURE.` |
-| Lock contention | `Could not acquire review file lock after 5 retries.` |
 | State corruption | `provider-state.json is inconsistent with review rounds (STATE_CORRUPTION).` |
 
 ---
@@ -281,9 +254,9 @@ Error rounds count toward the artifact round counter.
 
 ## Invariants
 
-- Review history is append-only.
+- Review history is append-only; normal rounds are written directly by the provider.
 - Artifact round numbers are monotonic and computed via `^## Round [0-9]`.
-- `tasks` review always loads all four artifacts into the prompt in fixed labeled order.
-- Adapter stdout contract is strict two-line output; human logs never appear on stdout.
+- `tasks` review always loads all four artifacts via `--file` arguments in fixed order.
+- Adapter stdout, when used, contains metadata only; human logs never appear on stdout.
 - Provider state updates are merged; review workflow does not overwrite execute workflow state.
 - Commands are explicit only; no mandatory auto-hooks.
