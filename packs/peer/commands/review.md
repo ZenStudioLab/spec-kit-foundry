@@ -3,7 +3,7 @@ id: peer.review
 command: speckit.peer.review
 version: 1.0.0
 pack: peer
-description: "Adversarial peer review of a Spec Kit artifact, or delegation to /plan-review for explicit file paths."
+description: "Adversarial peer review of a Spec Kit artifact, or routing to the bundled plan-review workflow for explicit file paths."
 invocation: "/speckit.peer.review <target> [--provider <name>] [--feature <id>]"
 ---
 
@@ -11,11 +11,11 @@ invocation: "/speckit.peer.review <target> [--provider <name>] [--feature <id>]"
 
 ## Purpose
 
-Invoke an adversarial peer review loop against a Spec Kit artifact, or delegate to `/plan-review` when the user supplies an explicit file path.
+Invoke an adversarial peer review loop against a Spec Kit artifact, or route to the bundled plan-review workflow when the user supplies an explicit file path.
 
 There are two execution modes:
 - **Artifact mode**: `<target>` is one of `spec`, `research`, `plan`, or `tasks`. Run the full peer-review loop described below.
-- **File delegation mode**: `<target>` resolves to an existing file path. Bypass the peer pack workflow entirely and invoke `/plan-review <file>` on that path.
+- **File delegation mode**: `<target>` resolves to an existing file path. Bypass the artifact-mode workflow and execute the bundled `templates/plan-review.md` workflow from this pack against that path.
 
 In artifact mode, each iteration:
 1. Codex reviews the artifact and appends a round to the review file with a `Consensus Status`.
@@ -40,7 +40,7 @@ The loop continues until a terminal consensus (`APPROVED`, `MOSTLY_GOOD` with us
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `target` | Yes | Either one of `spec`, `research`, `plan`, `tasks`, or an existing file path |
-| `--provider <name>` | No | Override `default_provider` from `.specify/peer.yml`; ignored in file delegation mode |
+| `--provider <name>` | No | Override `default_provider` from `.specify/peer.yml`; in file delegation mode this value is forwarded to the bundled `plan-review` skill |
 | `--feature <id>` | No | Explicit feature id when cwd context is ambiguous; ignored in file delegation mode |
 
 ---
@@ -72,8 +72,9 @@ Artifact mode only. File delegation mode is handled separately in Step 1.1a and 
 Resolve `<target>` in this order:
 
 1. If `<target>` is exactly one of `spec`, `research`, `plan`, or `tasks`, set `review_mode=artifact` and `artifact=<target>`.
-2. Else, if `<target>` resolves to an existing file path (relative or absolute), set `review_mode=file` and `input_file=<resolved absolute path>`.
-3. Else fail.
+2. Else, if `<target>` resolves to an existing file path (relative or absolute) and that path matches `specs/<featureId>/(spec|research|plan|tasks).md`, set `review_mode=artifact`, `featureId=<featureId-from-path>`, and `artifact=<filename-without-.md>`. Canonical feature artifact paths always use artifact mode, even when passed as file paths.
+3. Else, if `<target>` resolves to an existing file path (relative or absolute), set `review_mode=file` and `input_file=<resolved absolute path>`.
+4. Else fail.
 
 If the value is neither a supported artifact target nor an existing file path:
 - Emit to stderr: `[peer/review] ERROR: VALIDATION_ERROR: unknown target '<x>'; must be one of spec|research|plan|tasks or an existing file path`
@@ -82,23 +83,25 @@ If the value is neither a supported artifact target nor an existing file path:
 
 ### Step 1.1a — File Delegation Fast Path
 
-> **File delegation mode**: This mode bypasses the artifact-mode Codex review loop above. Treat `/plan-review` as the sole executor for the delegated file review.
+> **File delegation mode**: This mode bypasses the artifact-mode Codex review loop above. Treat the bundled `plan-review` skill as the sole executor for the delegated file review.
 
 If `review_mode=file`:
 
 1. Treat `input_file` as the sole review subject.
-2. Invoke `/plan-review <input_file>` and delegate the entire request to that skill.
+2. Load `templates/plan-review.md` from this pack as an instruction document. Bind `plan-file-path` to the resolved absolute value of `input_file`. If `--provider <name>` was supplied, bind `provider` to `<name>`; otherwise leave `provider` unset so the skill applies its default (`codex`). Execute the skill workflow with these bindings in scope.
 3. Return the delegated result to the user.
+
+_Invocation mechanics_: in this pack, "executing a bundled workflow" means loading the template markdown as an instruction context for the AI orchestrator (Claude), with the named variables available as substitution targets. This is not a subprocess or shell call. If `templates/plan-review.md` cannot be found at load time, emit `[plan-review] ERROR: PROVIDER_UNAVAILABLE: templates/plan-review.md not found` and exit `1`.
 
 In file delegation mode:
 - Do **NOT** load `.specify/peer.yml`
 - Do **NOT** resolve `featureId`
-- Ignore `--provider` and `--feature` if they were supplied
-- Do **NOT** read or write any file under `specs/<featureId>/reviews/`
+- Forward `--provider` if supplied; ignore `--feature`
+- Do **NOT** read or write canonical artifact review files (`specs/<featureId>/reviews/spec-review.md`, `research-review.md`, `plan-review.md`, `tasks-review.md`)
 - Do **NOT** create or update `provider-state.json`
 - Do **NOT** invoke `ask_codex.sh` through the peer adapter path
 
-If `/plan-review` fails, surface that failure unchanged and halt.
+If the `plan-review` skill fails (non-zero exit), surface that failure unchanged and halt.
 
 All remaining steps in this command apply to `review_mode=artifact` only.
 
@@ -106,9 +109,10 @@ All remaining steps in this command apply to `review_mode=artifact` only.
 
 Resolve the `featureId` using this order of precedence:
 
-1. **Current working directory context**: check if cwd is under `specs/<id>/` — use that `<id>`
-2. **Explicit flag**: `--feature <id>` if provided
-3. **Fail**: list all `specs/*/` directory names and exit with:
+1. **Canonical file-path context**: if Step 1.1 already derived `featureId` from `specs/<id>/(spec|research|plan|tasks).md`, use that `<id>`
+2. **Current working directory context**: check if cwd is under `specs/<id>/` — use that `<id>`
+3. **Explicit flag**: `--feature <id>` if provided
+4. **Fail**: list all `specs/*/` directory names and exit with:
    - `[peer/review] ERROR: VALIDATION_ERROR: cannot determine feature; use --feature <id>. Available: <list>`
    - Exit code `5`
 
@@ -554,7 +558,7 @@ The round counting for `tasks-review.md` follows the same rules as all other art
 
 - **Append-only reviews**: No prior round in any review file is ever modified or deleted
 - **Precondition isolation**: No file is created or modified when any artifact-mode precondition (Steps 1.1–1.7) fails
-- **File delegation bypass**: Existing file-path targets are routed to `/plan-review` without loading peer config, touching peer state, or writing peer review files; `--provider` and `--feature` are ignored in this mode
+- **File delegation bypass**: Existing file-path targets are routed to the bundled `plan-review` skill without loading peer config, touching peer state, or writing peer review files; `--provider` is forwarded and `--feature` is ignored in this mode
 - **Review file ownership**: Codex writes normal review rounds; Claude may append only the minimal `PARSE_FAILURE` error note when the provider omitted the terminal status marker
 - **Claude revises artifacts**: After each `NEEDS_REVISION` round, Claude revises the artifact in-place before the next round
 - **State write-order**: Codex writes review → Claude reads consensus → Claude writes provider-state.json (atomic rename)

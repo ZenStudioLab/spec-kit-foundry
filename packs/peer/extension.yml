@@ -17,4 +17,6 @@ provides:
       file: commands/execute.md
   memory:
     - memory/peer-guide.md
+  templates:
+    - templates/plan-review.md
 

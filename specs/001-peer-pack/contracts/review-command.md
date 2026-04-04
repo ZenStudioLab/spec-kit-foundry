@@ -17,7 +17,7 @@
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `target` | Yes | One of `spec`, `research`, `plan`, `tasks`, or an existing file path |
-| `--provider <name>` | No | Override `default_provider` from `.specify/peer.yml`; ignored for file-path delegation |
+| `--provider <name>` | No | Override `default_provider` from `.specify/peer.yml`; forwarded to the bundled file-mode plan-review workflow for file-path delegation |
 | `--feature <id>` | No | Explicit feature id when feature context is ambiguous; ignored for file-path delegation |
 
 ### Examples
@@ -32,7 +32,7 @@
 # Review tasks for a specific feature
 /speckit.peer.review tasks --feature 001-peer-pack
 
-# Delegate a standalone file to /plan-review
+# Review a standalone file through the bundled file-mode plan-review workflow
 /speckit.peer.review docs/plans/refining-agent-for-codex-invocation.md
 ```
 
@@ -44,28 +44,30 @@ The command halts on any failed precondition with an actionable error and no par
 
 1. `target` must be either one of `spec|research|plan|tasks` or an existing file path.
 2. Artifact-keyword precedence applies: if `target` is exactly `spec`, `research`, `plan`, or `tasks`, artifact mode wins even if a file with the same name exists in the current directory.
-3. If `target` is not an artifact enum, it must resolve to an existing file path.
-4. When `target` resolves to an existing file path, the command MUST delegate to `/plan-review <file>` and halt after returning the delegated result.
-5. File-path delegation mode MUST NOT load `.specify/peer.yml`, resolve feature context, read/write `specs/<featureId>/reviews/*`, or update `provider-state.json`; any supplied `--provider` or `--feature` flags are ignored.
-6. Feature context must resolve in this order:
+3. If `target` resolves to a canonical feature artifact path matching `specs/<id>/(spec|research|plan|tasks).md`, artifact mode wins and the command derives `featureId=<id>` and `artifact=<filename-without-.md>` from the path.
+4. If `target` is not an artifact enum or canonical feature artifact path, it must resolve to an existing file path.
+5. When `target` resolves to a standalone existing file path, the command MUST load the bundled `templates/plan-review.md` workflow within the peer pack against the resolved file path and halt after returning the delegated result.
+6. File-path delegation mode MUST NOT load `.specify/peer.yml`, resolve feature context, read/write canonical artifact review files (`specs/<featureId>/reviews/spec-review.md`, `research-review.md`, `plan-review.md`, `tasks-review.md`), or update `provider-state.json`; any supplied `--provider` flag is forwarded into the bundled file-mode workflow and any supplied `--feature` flag is ignored.
+7. Feature context must resolve in this order:
+   - canonical feature path context derived from `specs/<id>/(spec|research|plan|tasks).md`
    - current working directory spec context
    - then `--feature <id>`
    - otherwise fail and list available `specs/*` directories
-7. `.specify/peer.yml` must exist and `version` must be integer `1`.
-8. Resolved provider (`--provider` or `default_provider`) must exist in `providers`, be `enabled: true`, and have `mode: orchestrated`.
-9. Adapter guide must exist at `shared/providers/<provider>/adapter-guide.md`.
-10. For `codex`, script discovery order is:
+8. `.specify/peer.yml` must exist and `version` must be integer `1`.
+9. Resolved provider (`--provider` or `default_provider`) must exist in `providers`, be `enabled: true`, and have `mode: orchestrated`.
+10. Adapter guide must exist at `shared/providers/<provider>/adapter-guide.md`.
+11. For `codex`, script discovery order is:
    - `CODEX_SKILL_PATH` (if set; must exist, be readable, executable)
    - `~/.claude/skills/codex/scripts/ask_codex.sh`
-11. When `CODEX_SKILL_PATH` override is used, emit warning:
+12. When `CODEX_SKILL_PATH` override is used, emit warning:
    - default: `[peer/WARN] using CODEX_SKILL_PATH override: ~/...`
    - with `PEER_DEBUG=1`: full absolute path may be shown
-12. Target artifact file `specs/<featureId>/<artifact>.md` must exist and be non-empty.
-13. If `artifact=tasks`, all four artifacts must exist and be non-empty:
+13. Target artifact file `specs/<featureId>/<artifact>.md` must exist and be non-empty.
+14. If `artifact=tasks`, all four artifacts must exist and be non-empty:
    - `spec.md`, `research.md`, `plan.md`, `tasks.md`
-14. `max_artifact_size_kb` must validate as integer `1..10240` when present.
-15. `CODEX_TIMEOUT_SECONDS` must validate as integer `10..600` when present (default `60`).
-16. Command is explicit-only; no mandatory auto-hooks.
+15. `max_artifact_size_kb` must validate as integer `1..10240` when present.
+16. `CODEX_TIMEOUT_SECONDS` must validate as integer `10..600` when present (default `60`).
+17. Command is explicit-only; no mandatory auto-hooks.
 
 ---
 
@@ -73,7 +75,7 @@ The command halts on any failed precondition with an actionable error and no par
 
 1. **Resolve feature and paths**
    - Resolve `target` with artifact-keyword precedence first, then file-path delegation.
-   - If `target` resolves to an existing file path, delegate immediately to `/plan-review <resolved-path>` and stop. No remaining execution steps apply.
+   - If `target` resolves to a standalone existing file path after the Step 1 resolution gate has ruled out canonical feature artifact paths (`specs/<id>/(spec|research|plan|tasks).md`), delegate immediately to the bundled file-mode workflow with `<resolved-path>` and stop. No remaining execution steps apply.
    - All remaining execution steps in this contract apply to artifact mode only.
    - Resolve `featureId` using precondition order.
    - Artifact path: `specs/<featureId>/<artifact>.md`.
